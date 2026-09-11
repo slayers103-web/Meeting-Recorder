@@ -1,0 +1,386 @@
+package com.daedalusapps.echo.ai
+
+import android.content.Context
+import android.content.SharedPreferences
+import android.util.Log
+import com.daedalusapps.echo.data.RecordingRepository
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.slot
+import io.mockk.unmockkStatic
+import kotlinx.coroutines.test.runTest
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+
+class RecordingAnalysisTest {
+
+    private lateinit var context: Context
+    private lateinit var llm: LocalLlmService
+    private lateinit var embedder: EmbeddingService
+    private lateinit var repo: RecordingRepository
+
+    @Before
+    fun setup() {
+        val prefs = mockk<SharedPreferences>(relaxed = true)
+        every { prefs.getString("custom_prompt", null) } returns null
+        every { prefs.getInt(AI_TEXT_BUDGET_KEY, AI_TEXT_BUDGET_DEFAULT) } returns AI_TEXT_BUDGET_DEFAULT
+        context = mockk(relaxed = true)
+        every { context.getSharedPreferences(any(), any()) } returns prefs
+
+        llm = mockk(relaxed = true)
+        embedder = mockk(relaxed = true)
+        repo = mockk(relaxed = true)
+
+        every { embedder.isReady } returns false
+
+        mockkStatic(Log::class)
+        every { Log.w(any(), any<String>()) } returns 0
+    }
+
+    @After
+    fun tearDown() {
+        unmockkStatic(Log::class)
+    }
+
+    private val jsonResponse = """
+        {"title": "Standup", "shortSummary": "Quick sync", "topics": ["standup", "sync"], "mindMap": "- point one", "fullSummary": "Discussed standup items."}
+    """.trimIndent()
+
+    // Real degraded output captured from a device: Gemma answered as a free-form bullet list of
+    // quotes instead of following the JSON/markdown-field instruction. Neither tryParseJson nor
+    // tryParseMarkdown can extract any known field from this, so SmartAnalysisParser.parse falls
+    // back to SmartAnalysis(fullSummary = rawResponse) — blank title/shortSummary/topics/mindMap.
+    private val degradedBulletFixture = """
+        - “I need an offsite team building event”
+        - “September”
+        - “approximately” number – “how many people”
+        - “Mid-September” – “better than late-September”
+        - “Monday or Tuesday” – “This gives us some decent options”
+        - “half day” – “This helps determine logistical feasibility”
+        - “Relaxed and creative” – “more appealing”
+        - “activity-based and focused on team building”
+        - “Resort/Hotels” – “This can provide some space and have beautiful/cool views”
+        - “Campgrounds” – “This can be very relaxed and budget friendly but requires more planning regarding space and amenities”
+        - “Hotel Ballroom/Event Space” – “This can be more formal and can be customized easily”
+        - “More appealing” – “This feels more appealing”
+        - “Gunshot” – “This suggests there’s someone reacting negatively”
+        - “Venue ideas” – “Let’s find options based on Tuesday or Wednesday”
+        - “Resort/Hotels” – “This can provide some space and have beautiful/cool views”
+        - “Campgrounds” – “This can be very relaxed and budget friendly but requires more planning regarding space and amenities”
+        - “Hotel Ballroom/Event Space” – “This can be more formal and can be customized easily”
+    """.trimIndent()
+
+    /** Runs the pipeline over [raw] and returns the (title, shortSummary) actually persisted. */
+    private suspend fun capturePersistedTitleAndSummary(
+        raw: String,
+        transcript: String
+    ): Pair<String, String> {
+        coEvery { llm.generate(any(), any<String>()) } returns raw
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript)
+
+        val titleSlot = slot<String>()
+        val shortSummarySlot = slot<String>()
+        coVerify(exactly = 1) {
+            repo.updateSummary(
+                filename = "note.mp3",
+                summary = any(),
+                mindMap = any(),
+                title = capture(titleSlot),
+                shortSummary = capture(shortSummarySlot),
+                topics = any()
+            )
+        }
+        return titleSlot.captured to shortSummarySlot.captured
+    }
+
+    @Test
+    fun updateSummary_degradedFreeFormResponse_derivesSensibleTitleAndSummary() = runTest {
+        val (title, shortSummary) =
+            capturePersistedTitleAndSummary(degradedBulletFixture, "offsite planning discussion")
+
+        assertTrue("shortSummary should not be blank", shortSummary.isNotBlank())
+        assertTrue("title should not be blank", title.isNotBlank())
+        assertTrue("title should not start with '-'", !title.startsWith("-"))
+        assertTrue(
+            "title should not start with a quote character",
+            !title.startsWith("\"") && !title.startsWith("'") &&
+                !title.startsWith("“") && !title.startsWith("‘")
+        )
+        assertTrue("title should be within the length cap", title.length <= 60)
+        assertTrue("title should be a single line", !title.contains("\n"))
+    }
+
+    @Test
+    fun updateSummary_degradedResponseWithNoUsableText_stillHasTitleAndPreview() = runTest {
+        // Degenerate sources that truncate away to nothing must not leave a blank preview, which is
+        // the original bug. Empty response + empty transcript, and a punctuation-only response.
+        val (emptyTitle, emptySummary) = capturePersistedTitleAndSummary("", "")
+        assertTrue("title should not be blank", emptyTitle.isNotBlank())
+        assertTrue("shortSummary should not be blank", emptySummary.isNotBlank())
+
+        repo = mockk(relaxed = true)
+        val (punctTitle, punctSummary) = capturePersistedTitleAndSummary(".".repeat(300), "")
+        assertTrue("title should not be blank", punctTitle.isNotBlank())
+        assertTrue("shortSummary should not be blank", punctSummary.isNotBlank())
+    }
+
+    @Test
+    fun updateSummary_degradedResponseWithEmoji_doesNotSplitSurrogatePair() = runTest {
+        // 59 chars then emoji puts a surrogate pair across the 60-char title cap, and there is no
+        // space to fall back to; a naive substring would leave a stray half-character.
+        val (title, _) = capturePersistedTitleAndSummary("a".repeat(59) + "😀".repeat(10), "tx")
+
+        assertTrue("title should not be blank", title.isNotBlank())
+        assertTrue(
+            "title must not end with an unpaired surrogate",
+            !Character.isHighSurrogate(title.last())
+        )
+    }
+
+    @Test
+    fun updateSummary_degradedResponseOpeningWithABareMarker_titlesFromTheFirstRealLine() = runTest {
+        // The first non-blank line is nothing but a bullet marker; the title must come from the
+        // first line that still has content after cleaning, not from the marker line.
+        val (title, _) = capturePersistedTitleAndSummary("-\n###\n- Offsite venue options", "tx")
+
+        assertTrue(
+            "title should come from the first line with content, was '$title'",
+            title.startsWith("Offsite venue options")
+        )
+    }
+
+    @Test
+    fun updateSummary_degradedResponseAllMarkerLines_stillFallsBackToPlaceholderTitle() = runTest {
+        // Every line is nothing but markers; cleaning strips all of them to nothing, so this must
+        // still land on the stable placeholder rather than an empty title.
+        val (title, _) = capturePersistedTitleAndSummary("-\n###\n*\n", "")
+
+        assertEquals("Untitled Recording", title)
+    }
+
+    @Test
+    fun updateSummary_degradedResponseWithNonBreakingSpaceBeforeMarker_stillStripsTheMarker() =
+        runTest {
+            // trimStart only knows ' ' and '\t', so a non-breaking space in front of the bullet
+            // must be removed by the leading trim() or the title keeps its "- " marker.
+            val (title, _) =
+                capturePersistedTitleAndSummary("-\n\u00A0- Offsite venue options", "tx")
+
+            assertTrue("title should not start with a marker, was '$title'", !title.startsWith("-"))
+            assertTrue(
+                "title should come from the first line with content, was '$title'",
+                title.startsWith("Offsite venue options")
+            )
+        }
+
+    @Test
+    fun updateSummary_wellFormedJson_isNotAlteredByFallback() = runTest {
+        val transcript = "short transcript"
+        coEvery { llm.generate(any(), any<String>()) } returns jsonResponse
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript)
+
+        coVerify(exactly = 1) {
+            repo.updateSummary(
+                filename = "note.mp3",
+                summary = "Discussed standup items.",
+                mindMap = "- point one",
+                title = "Standup",
+                shortSummary = "Quick sync",
+                topics = listOf("standup", "sync")
+            )
+        }
+    }
+
+    @Test
+    fun updateSummary_partiallyParsedResponse_keepsParsedFieldsButBackfillsPreview() = runTest {
+        val transcript = "short transcript"
+        // Has a title but blank shortSummary/mindMap/topics: NOT all four fields are blank, so the
+        // degraded-fallback guard must not engage and must not overwrite title/topics/mindMap. The
+        // preview (shortSummary) is still backfilled independently so the note has a list preview
+        // and is not silently excluded from search (#67).
+        val partialJson = """
+            {"title": "Partial Title", "shortSummary": "", "topics": [], "mindMap": "", "fullSummary": "Some full summary text."}
+        """.trimIndent()
+        coEvery { llm.generate(any(), any<String>()) } returns partialJson
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript)
+
+        val shortSummarySlot = slot<String>()
+        coVerify(exactly = 1) {
+            repo.updateSummary(
+                filename = "note.mp3",
+                summary = "Some full summary text.",
+                mindMap = "",
+                title = "Partial Title",
+                shortSummary = capture(shortSummarySlot),
+                topics = emptyList()
+            )
+        }
+        assertEquals("Some full summary text.", shortSummarySlot.captured)
+    }
+
+    // (#67) Real device shape: title present but shortSummary/mindMap/topics/fullSummary ALL blank
+    // (Gemma's markdown response truncated after the title line). The preview must still be
+    // derived — from the transcript, since fullSummary is blank too — while title stays as parsed
+    // and topics/mindMap stay empty rather than fabricated.
+    @Test
+    fun updateSummary_titleOnlyPartialParse_backfillsPreviewFromTranscript() = runTest {
+        val transcript = "We discussed the quarterly roadmap and next steps for the team."
+        // Markdown format (not JSON): tryParseMarkdown has no raw-text fallback for fullSummary,
+        // so a response truncated after the title line leaves fullSummary genuinely blank — this
+        // is the actual shape observed on the owner's device.
+        val titleOnlyMarkdown = "- title: Roadmap Sync"
+
+        val (title, shortSummary) = capturePersistedTitleAndSummary(titleOnlyMarkdown, transcript)
+
+        assertEquals("Roadmap Sync", title)
+        assertTrue("shortSummary should not be blank", shortSummary.isNotBlank())
+        assertTrue(
+            "shortSummary should be derived from the transcript",
+            shortSummary.startsWith("We discussed the quarterly roadmap")
+        )
+    }
+
+    // (#67) When fullSummary IS present but shortSummary is blank, the preview must be derived
+    // from fullSummary, not the (potentially unrelated-looking) transcript.
+    @Test
+    fun updateSummary_partialParseWithFullSummary_backfillsPreviewFromFullSummary() = runTest {
+        val transcript = "irrelevant raw transcript text that should not be used"
+        val partialJson = """
+            {"title": "Partial Title", "shortSummary": "", "topics": [], "mindMap": "", "fullSummary": "This is the full summary body."}
+        """.trimIndent()
+
+        val (_, shortSummary) = capturePersistedTitleAndSummary(partialJson, transcript)
+
+        assertEquals("This is the full summary body.", shortSummary)
+    }
+
+    @Test
+    fun updateSummary_degradedFreeFormResponse_topicsAndMindMapRemainEmpty() = runTest {
+        val transcript = "offsite planning discussion"
+        coEvery { llm.generate(any(), any<String>()) } returns degradedBulletFixture
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript)
+
+        coVerify(exactly = 1) {
+            repo.updateSummary(
+                filename = "note.mp3",
+                summary = any(),
+                mindMap = "",
+                title = any(),
+                shortSummary = any(),
+                topics = emptyList()
+            )
+        }
+    }
+
+    @Test
+    fun singlePass_callsGenerateOnceWithActivePrompt() = runTest {
+        val transcript = "short transcript"
+        coEvery { llm.generate(any(), any<String>()) } returns jsonResponse
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript)
+
+        coVerify(exactly = 1) { llm.generate(DEFAULT_PROMPT, transcript) }
+    }
+
+    @Test
+    fun multiChunk_callsPerChunkThenSynthesis() = runTest {
+        // aiTextBudget resolves to AI_TEXT_BUDGET_DEFAULT (12,000 chars) via the mocked prefs,
+        // so a transcript well beyond that forces multiple chunks.
+        val transcript = "word ".repeat(3000)
+        coEvery { llm.generate(any(), any<String>()) } returns jsonResponse
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript)
+
+        coVerify(atLeast = 2) { llm.generate(CHUNK_SUMMARY_PROMPT, any<String>()) }
+        coVerify(exactly = 1) { llm.generate(DEFAULT_PROMPT, any<String>()) }
+    }
+
+    @Test
+    fun updateSummary_receivesParsedFields() = runTest {
+        val transcript = "short transcript"
+        coEvery { llm.generate(any(), any<String>()) } returns jsonResponse
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript)
+
+        coVerify(exactly = 1) {
+            repo.updateSummary(
+                filename = "note.mp3",
+                summary = "Discussed standup items.",
+                mindMap = "- point one",
+                title = "Standup",
+                shortSummary = "Quick sync",
+                topics = listOf("standup", "sync")
+            )
+        }
+    }
+
+    @Test
+    fun embeddingSaved_whenEmbedderReady() = runTest {
+        val transcript = "short transcript"
+        coEvery { llm.generate(any(), any<String>()) } returns jsonResponse
+        every { embedder.isReady } returns true
+        coEvery { embedder.embed(any()) } returns floatArrayOf(0.1f, 0.2f)
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript)
+
+        coVerify(exactly = 1) { embedder.ensureLoaded() }
+        coVerify(exactly = 1) { repo.updateEmbedding("note.mp3", floatArrayOf(0.1f, 0.2f)) }
+    }
+
+    @Test
+    fun embeddingNotSaved_whenEmbedderNotReady() = runTest {
+        val transcript = "short transcript"
+        coEvery { llm.generate(any(), any<String>()) } returns jsonResponse
+        every { embedder.isReady } returns false
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript)
+
+        coVerify(exactly = 0) { embedder.embed(any()) }
+        coVerify(exactly = 0) { repo.updateEmbedding(any(), any()) }
+    }
+
+    @Test
+    fun singlePass_reportsAnalyzingProgress() = runTest {
+        val transcript = "short transcript"
+        coEvery { llm.generate(any(), any<String>()) } returns jsonResponse
+        val updates = mutableListOf<String>()
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript) { updates.add(it) }
+
+        assertEquals(listOf("Analyzing with Gemma…"), updates)
+    }
+
+    @Test
+    fun multiChunk_reportsPerChunkThenSynthesisProgress() = runTest {
+        val transcript = "word ".repeat(3000)
+        coEvery { llm.generate(any(), any<String>()) } returns jsonResponse
+        val updates = mutableListOf<String>()
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript) { updates.add(it) }
+
+        assertEquals("Synthesizing results…", updates.last())
+        assertEquals(updates.size - 1, updates.count { it.startsWith("Summarizing section ") })
+        assertEquals("Summarizing section 1 of ${updates.size - 1}…", updates.first())
+    }
+
+    @Test
+    fun singleChunkBulletSynthesis_reportsSummarizingThenSynthesisProgress() = runTest {
+        val transcript = "word ".repeat(600)
+        coEvery { llm.generate(any(), any<String>()) } returns jsonResponse
+        val updates = mutableListOf<String>()
+
+        analyzeTranscript(context, llm, embedder, repo, "note.mp3", transcript) { updates.add(it) }
+
+        assertEquals(listOf("Summarizing…", "Synthesizing results…"), updates)
+    }
+}

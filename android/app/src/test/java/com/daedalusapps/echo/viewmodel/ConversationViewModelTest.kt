@@ -1,0 +1,2651 @@
+package com.daedalusapps.echo.viewmodel
+
+import android.app.Application
+import android.content.Context
+import android.util.Log
+import androidx.test.core.app.ApplicationProvider
+import com.daedalusapps.echo.ai.ChatTurn
+import com.daedalusapps.echo.ai.EmbeddingService
+import com.daedalusapps.echo.ai.LocalLlmService
+import com.daedalusapps.echo.ai.Role
+import com.daedalusapps.echo.ai.SpeechService
+import com.daedalusapps.echo.ai.TranscriptionService
+import com.daedalusapps.echo.ai.VoiceInfo
+import com.daedalusapps.echo.ai.WHISPER_DECODER_FILE
+import com.daedalusapps.echo.ai.WHISPER_ENCODER_FILE
+import com.daedalusapps.echo.ai.WHISPER_TOKENS_FILE
+import com.daedalusapps.echo.ai.aiTextBudget
+import com.daedalusapps.echo.ai.buildGemmaPrompt
+import com.daedalusapps.echo.ai.whisperModelDir
+import com.daedalusapps.echo.data.RecordingRepository
+import com.daedalusapps.echo.data.model.Recording
+import com.daedalusapps.echo.recording.AudioRecorder
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.slot
+import io.mockk.unmockkStatic
+import io.mockk.verify
+import io.mockk.verifyOrder
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withTimeout
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/**
+ * Ported (text-only) subset of notetaker's ConversationViewModelTest covering session file
+ * format/append/resume/parsing, consecutive-role merging, the single-shot send guard,
+ * TimeoutCancellationException-vs-CancellationException ordering, the rolling-summary live
+ * context cap (#20 / EB.3, #21 / EB.4), and ending a session into an analyzed library note
+ * (#22 / EB.5). Also covers the voice/rate picker's persistence layer (#25 / EC.3): setTtsRate/
+ * setTtsVoice persist+apply+preview, the persisted values are applied when the (lazy) engine is
+ * first built, and a filtered/unknown persisted voice self-heals without crashing or clearing the
+ * pref. Instant send and auto-listen are out of scope here (later issues) — see
+ * HANDOFF_NOTETAKER_PARITY.md for the scope split.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
+class ConversationViewModelTest {
+
+    private lateinit var application: Application
+    private val llm = mockk<LocalLlmService>(relaxed = true)
+    private val repo = mockk<RecordingRepository>(relaxed = true)
+    private val embedder = mockk<EmbeddingService>(relaxed = true)
+    private val audioRecorder = mockk<AudioRecorder>(relaxed = true)
+    private val transcriptionService = mockk<TranscriptionService>(relaxed = true)
+    private val tts = mockk<SpeechService>(relaxed = true)
+    // Counts how often the ViewModel asked for a speech engine, so tests can assert that a user
+    // who never turns spoken replies on never pays for building one.
+    private var ttsConstructions = 0
+    private val testDispatcher = StandardTestDispatcher()
+
+    // Fixed instant so filenames/day comparisons are deterministic across the test run.
+    private val nowMillis = 1_700_000_000_000L
+
+    private fun prefs() =
+        application.getSharedPreferences("daedalus_prefs", Context.MODE_PRIVATE)
+
+    private fun conversationsDir(): File = File(application.filesDir, "conversations")
+
+    /** Marks the Whisper model as downloaded, so startVoiceInput proceeds. */
+    private fun markWhisperReady() {
+        val dir = whisperModelDir(application)
+        dir.mkdirs()
+        File(dir, WHISPER_ENCODER_FILE).writeText("x")
+        File(dir, WHISPER_DECODER_FILE).writeText("x")
+        File(dir, WHISPER_TOKENS_FILE).writeText("x")
+    }
+
+    @Before
+    fun setup() {
+        application = ApplicationProvider.getApplicationContext()
+        Dispatchers.setMain(testDispatcher)
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.i(any(), any()) } returns 0
+        every { Log.w(any(), any() as String) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+        coEvery { llm.ensureLoaded() } returns Unit
+        every { tts.isAvailable } returns true
+        every { embedder.isReady } returns false
+        ttsConstructions = 0
+
+        conversationsDir().deleteRecursively()
+        prefs().edit().clear().commit()
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
+        unmockkStatic(Log::class)
+        conversationsDir().deleteRecursively()
+        prefs().edit().clear().commit()
+    }
+
+    private fun newViewModel(contextBudgetChars: Int? = null): ConversationViewModel = ConversationViewModel(
+        application = application,
+        llm = llm,
+        repo = repo,
+        embedder = embedder,
+        ioDispatcher = testDispatcher,
+        clock = { nowMillis },
+        contextBudgetChars = contextBudgetChars ?: (aiTextBudget(application) * 0.75).toInt(),
+        audioRecorderProvider = { audioRecorder },
+        transcriptionServiceProvider = { transcriptionService },
+        ttsProvider = { ttsConstructions++; tts }
+    )
+
+    // (a) send() twice produces user+model messages in order, and the session file contains
+    //     all four turns, in order, after two exchanges.
+    @Test
+    fun send_twoExchanges_appendsMessagesAndFileHasAllFourTurnsInOrder() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returnsMany listOf(
+            "Sounds interesting, tell me more.",
+            "Great, here's a follow-up idea."
+        )
+        val vm = newViewModel()
+
+        vm.send("I want to build a note app")
+        advanceUntilIdle()
+        vm.send("It should support voice")
+        advanceUntilIdle()
+
+        val messages = vm.messages.value
+        assertEquals(4, messages.size)
+        assertEquals(Role.USER, messages[0].role)
+        assertEquals(Role.MODEL, messages[1].role)
+        assertEquals(Role.USER, messages[2].role)
+        assertEquals(Role.MODEL, messages[3].role)
+
+        val fileContent = vm.sessionFile.readText()
+        val order = listOf("**Me**", "**Agent**", "**Me**", "**Agent**")
+        var lastIndex = -1
+        order.forEach { marker ->
+            val idx = fileContent.indexOf(marker, lastIndex + 1)
+            assertTrue("expected $marker after index $lastIndex in:\n$fileContent", idx > lastIndex)
+            lastIndex = idx
+        }
+        assertTrue(fileContent.contains("I want to build a note app"))
+        assertTrue(fileContent.contains("Sounds interesting, tell me more."))
+        assertTrue(fileContent.contains("It should support voice"))
+        assertTrue(fileContent.contains("Great, here's a follow-up idea."))
+    }
+
+    // (b) Turns are appended incrementally: the file already has the user turn while
+    //     generation is still in flight.
+    @Test
+    fun send_fileHasUserTurnWhileGenerationInFlight() = runTest {
+        val gate = CompletableDeferred<String>()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } coAnswers { gate.await() }
+        val vm = newViewModel()
+
+        vm.send("Thinking out loud")
+        testDispatcher.scheduler.runCurrent()
+
+        assertTrue(vm.isGenerating.value)
+        val content = vm.sessionFile.readText()
+        assertTrue(content.contains("**Me**"))
+        assertTrue(content.contains("Thinking out loud"))
+        assertFalse(content.contains("**Agent**"))
+
+        gate.complete("ok")
+        advanceUntilIdle()
+    }
+
+    // (c) LLM failure -> error state set, no MODEL message appended, user turn persisted
+    //     in both the message list and the file.
+    @Test
+    fun send_llmThrows_setsErrorNoModelMessageUserTurnPersisted() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } throws RuntimeException("boom")
+        val vm = newViewModel()
+
+        vm.send("Will this fail?")
+        advanceUntilIdle()
+
+        assertEquals(1, vm.messages.value.size)
+        assertEquals(Role.USER, vm.messages.value[0].role)
+        assertNotNull(vm.error.value)
+        assertFalse(vm.isGenerating.value)
+
+        val content = vm.sessionFile.readText()
+        assertTrue(content.contains("Will this fail?"))
+        assertFalse(content.contains("**Agent**"))
+    }
+
+    // (d) Reload: a new ViewModel constructed while an unfinished session file from today
+    //     exists restores its messages, and a subsequent send() continues appending to the
+    //     SAME file, correctly, alongside the prior turns.
+    @Test
+    fun reload_existingTodaysSessionFile_restoresMessagesAndContinuesAppending() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "First reply"
+        val vm1 = newViewModel()
+        vm1.send("Original message")
+        advanceUntilIdle()
+        val originalFile = vm1.sessionFile
+        assertTrue(originalFile.exists())
+
+        val vm2 = newViewModel()
+        advanceUntilIdle()
+
+        assertEquals(2, vm2.messages.value.size)
+        assertEquals("Original message", vm2.messages.value[0].text)
+        assertEquals(Role.USER, vm2.messages.value[0].role)
+        assertEquals("First reply", vm2.messages.value[1].text)
+        assertEquals(Role.MODEL, vm2.messages.value[1].role)
+        assertEquals(originalFile.absolutePath, vm2.sessionFile.absolutePath)
+
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Second reply"
+        vm2.send("Continuing")
+        advanceUntilIdle()
+
+        val content = originalFile.readText()
+        assertTrue(content.contains("Original message"))
+        assertTrue(content.contains("First reply"))
+        assertTrue(content.contains("Continuing"))
+        assertTrue(content.contains("Second reply"))
+        assertEquals(4, vm2.messages.value.size)
+    }
+
+    // (e) After a failed generation the message list holds two USER turns in a row. The Gemma
+    //     chat template rejects consecutive same-role turns, so they must be merged before the
+    //     next generate() call — otherwise the session is permanently broken.
+    @Test
+    fun send_afterFailedGeneration_mergesConsecutiveUserTurns() = runTest {
+        val captured = mutableListOf<List<ChatTurn>>()
+        coEvery { llm.generate(any(), capture(captured)) } throws RuntimeException("boom")
+        val vm = newViewModel()
+        vm.send("First thought")
+        advanceUntilIdle()
+
+        coEvery { llm.generate(any(), capture(captured)) } returns "Recovered"
+        vm.send("Second thought")
+        advanceUntilIdle()
+
+        val turns = captured.last()
+        assertEquals(1, turns.size)
+        assertEquals(Role.USER, turns[0].role)
+        assertTrue(turns[0].text.contains("First thought"))
+        assertTrue(turns[0].text.contains("Second thought"))
+        // The merged turns must satisfy the real prompt builder's contract.
+        buildGemmaPrompt("system", turns)
+        assertEquals("Recovered", vm.messages.value.last().text)
+        assertNull(vm.error.value)
+    }
+
+    // (f) A malformed session file must never crash the parser: garbage preamble, multiline
+    //     bodies, a user-typed line that looks like a turn header, empty turns, trailing blanks.
+    @Test
+    fun reload_malformedSessionFile_parsesWithoutCrashing() = runTest {
+        val dir = conversationsDir().apply { mkdirs() }
+        val name = "conv_" + SimpleDateFormat("yyyyMMddHHmmss", Locale.US).format(Date(nowMillis)) + ".md"
+        File(dir, name).writeText(
+            """
+            garbage preamble not written by us
+            **Not a header**
+            **Me** (09:15):
+            line one
+            line two
+
+            **Agent** (09:16):
+            **Me** (99:99):
+            **Me** (09:17):
+            quoting a header: **Me** (12:00):
+            still the same message
+
+            """.trimIndent() + "\n\n\n"
+        )
+
+        val vm = newViewModel()
+        advanceUntilIdle()
+
+        val messages = vm.messages.value
+        // Preamble and the empty Agent turn are dropped; the rest survives.
+        assertEquals(2, messages.size)
+        assertEquals(Role.USER, messages[0].role)
+        assertEquals("line one\nline two", messages[0].text)
+        assertEquals(Role.USER, messages[1].role)
+        assertTrue(messages[1].text.contains("still the same message"))
+        assertFalse(messages.any { it.text.contains("garbage preamble") })
+    }
+
+    // (gate-audit) An empty session file (e.g. created but never written, or truncated) must
+    //     parse to no messages rather than crashing.
+    @Test
+    fun reload_emptyFile_returnsNoMessages() = runTest {
+        val dir = conversationsDir().apply { mkdirs() }
+        val name = "conv_" + SimpleDateFormat("yyyyMMddHHmmss", Locale.US).format(Date(nowMillis)) + ".md"
+        File(dir, name).writeText("")
+
+        val vm = newViewModel()
+        advanceUntilIdle()
+
+        assertTrue(vm.messages.value.isEmpty())
+    }
+
+    // (gate-audit) A file containing only a turn header with no body text (immediate EOF, or a
+    //     header immediately followed by another header) has nothing representable to flush —
+    //     it must be dropped rather than producing an empty-text message.
+    @Test
+    fun reload_headerOnlyNoBody_producesNoMessages() = runTest {
+        val dir = conversationsDir().apply { mkdirs() }
+        val name = "conv_" + SimpleDateFormat("yyyyMMddHHmmss", Locale.US).format(Date(nowMillis)) + ".md"
+        File(dir, name).writeText("**Me** (09:15):\n")
+
+        val vm = newViewModel()
+        advanceUntilIdle()
+
+        assertTrue(vm.messages.value.isEmpty())
+    }
+
+    // (gate-audit) Non-UTF-8 / binary junk in a session file must not crash the parser or hang
+    //     it — it should decode with replacement characters and parse as ordinary (garbled) body
+    //     text, discarded here as preamble since it precedes any turn header.
+    @Test
+    fun reload_binaryJunkContent_doesNotCrash() = runTest {
+        val dir = conversationsDir().apply { mkdirs() }
+        val name = "conv_" + SimpleDateFormat("yyyyMMddHHmmss", Locale.US).format(Date(nowMillis)) + ".md"
+        val junk = byteArrayOf(0x00, 0x01, 0xFF.toByte(), 0xFE.toByte(), 0xC0.toByte(), 0x80.toByte(), 0x0A)
+        File(dir, name).apply {
+            writeBytes(junk)
+            appendText("**Me** (09:15):\nafter the junk\n\n")
+        }
+
+        val vm = newViewModel()
+        advanceUntilIdle()
+
+        assertEquals(1, vm.messages.value.size)
+        assertEquals(Role.USER, vm.messages.value[0].role)
+        assertEquals("after the junk", vm.messages.value[0].text)
+    }
+
+    // (gate-audit) Process death between the user turn's append and the reply's arrival: only
+    //     the user turn made it to disk. A fresh ViewModel construction (simulating restart) must
+    //     resume with exactly that user turn present and no dangling generation state.
+    @Test
+    fun reload_afterProcessDeathMidExchange_resumesWithUserTurnOnly() = runTest {
+        val gate = CompletableDeferred<String>()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } coAnswers { gate.await() }
+        val vm1 = newViewModel()
+        vm1.send("Only the user turn will be persisted")
+        testDispatcher.scheduler.runCurrent()
+        val file = vm1.sessionFile
+        assertTrue(file.readText().contains("Only the user turn will be persisted"))
+        assertFalse(file.readText().contains("**Agent**"))
+        // vm1's generate() call is left permanently suspended on `gate` — standing in for the
+        // process dying before a reply ever arrives. It is simply abandoned, never advanced.
+
+        val vm2 = newViewModel()
+        advanceUntilIdle()
+
+        assertEquals(1, vm2.messages.value.size)
+        assertEquals(Role.USER, vm2.messages.value[0].role)
+        assertEquals("Only the user turn will be persisted", vm2.messages.value[0].text)
+        assertFalse(vm2.isGenerating.value)
+        assertEquals(file.absolutePath, vm2.sessionFile.absolutePath)
+    }
+
+    // (gate-audit) A timeout must not brick the session: after it surfaces as an error, a
+    //     subsequent send() must still succeed normally.
+    @Test
+    fun send_llmTimesOut_sessionStillUsableAfterward() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } coAnswers {
+            withTimeout(1) { delay(10_000) }
+            "unreachable"
+        }
+        val vm = newViewModel()
+        vm.send("Will this time out?")
+        advanceUntilIdle()
+        assertNotNull(vm.error.value)
+
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Back to normal"
+        vm.send("Are we still working?")
+        advanceUntilIdle()
+
+        assertNull(vm.error.value)
+        assertFalse(vm.isGenerating.value)
+        assertEquals(3, vm.messages.value.size)
+        assertEquals(Role.MODEL, vm.messages.value[2].role)
+        assertEquals("Back to normal", vm.messages.value[2].text)
+        assertTrue(vm.sessionFile.readText().contains("Back to normal"))
+    }
+
+    // (EB.5-a) The user can start a fresh session on the same day: rotating clears the transcript
+    //     and writes to a new file, leaving the previous one intact on disk. Also exercises
+    //     newSessionFile()'s collision-avoiding retry loop, which only fires via startNewSession()
+    //     (findTodaysSessionFile() resumes rather than rotates past an existing today-dated file).
+    @Test
+    fun startNewSession_rotatesToNewFileAndClearsMessages() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Morning meeting")
+        advanceUntilIdle()
+        val firstFile = vm.sessionFile
+
+        vm.startNewSession()
+        advanceUntilIdle()
+
+        assertTrue(vm.messages.value.isEmpty())
+        assertTrue(firstFile.absolutePath != vm.sessionFile.absolutePath)
+
+        vm.send("Afternoon meeting")
+        advanceUntilIdle()
+
+        assertTrue(firstFile.readText().contains("Morning meeting"))
+        assertFalse(firstFile.readText().contains("Afternoon meeting"))
+        assertTrue(vm.sessionFile.readText().contains("Afternoon meeting"))
+        assertFalse(vm.sessionFile.readText().contains("Morning meeting"))
+
+        // The rotated-to session is the one resumed on reload (most recent file wins).
+        val reloaded = newViewModel()
+        advanceUntilIdle()
+        assertEquals(vm.sessionFile.absolutePath, reloaded.sessionFile.absolutePath)
+        assertEquals(1, reloaded.messages.value.count { it.role == Role.USER })
+    }
+
+    // (EB.5-b) endSession() inserts exactly one Recording whose transcript contains every turn,
+    //     in order, with speaker labels, mirroring local-recording save conventions.
+    @Test
+    fun endSession_insertsOneRecordingWithSpeakerLabeledTranscriptInOrder() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returnsMany listOf(
+            "Sounds interesting, tell me more.",
+            "Great, here's a follow-up idea."
+        )
+        val vm = newViewModel()
+        vm.send("I want to build a note app")
+        advanceUntilIdle()
+        vm.send("It should support voice")
+        advanceUntilIdle()
+
+        val saved = slot<Recording>()
+        coEvery { repo.save(capture(saved)) } returns Unit
+
+        vm.endSession()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { repo.save(any()) }
+        val recording = saved.captured
+        assertEquals(vm.sessionFile.name, recording.filename)
+        val transcript = recording.transcript
+        val order = listOf("Me: I want to build a note app", "Agent: Sounds interesting, tell me more.",
+            "Me: It should support voice", "Agent: Great, here's a follow-up idea.")
+        var lastIndex = -1
+        order.forEach { marker ->
+            val idx = transcript.indexOf(marker, lastIndex + 1)
+            assertTrue("expected \"$marker\" after index $lastIndex in:\n$transcript", idx > lastIndex)
+            lastIndex = idx
+        }
+    }
+
+    // (EB.5-c) endSession() triggers the same post-save analysis pipeline a transcribed local
+    //     recording gets: the LLM is invoked (mocked seam) and the resulting analysis is saved.
+    @Test
+    fun endSession_triggersAnalysisPipeline() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Let's plan the launch")
+        advanceUntilIdle()
+
+        coEvery { llm.generate(any(), any<String>()) } returns
+            """{"title":"Launch plan","shortSummary":"short","fullSummary":"full","mindMap":"","topics":["launch"]}"""
+
+        vm.endSession()
+        advanceUntilIdle()
+
+        coVerify(atLeast = 1) { llm.generate(any(), any<String>()) }
+        coVerify(exactly = 1) { repo.updateSummary(any(), any(), any(), any(), any(), any()) }
+    }
+
+    // (EB.5-d) The session file is renamed to its ended form, stays on disk, and its content is
+    //     unaffected (verbatim transcript guarantee).
+    @Test
+    fun endSession_rendersSessionFileEndedAndKeepsContent() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Original content to preserve")
+        advanceUntilIdle()
+        val originalFile = vm.sessionFile
+        val originalContent = originalFile.readText()
+
+        vm.endSession()
+        advanceUntilIdle()
+
+        assertFalse("original session file should be renamed away", originalFile.exists())
+        val dir = conversationsDir()
+        val endedFiles = dir.listFiles()?.filter { it.name.contains("ended") } ?: emptyList()
+        assertEquals(1, endedFiles.size)
+        assertEquals(originalContent, endedFiles[0].readText())
+    }
+
+    // (EB.5-e) After endSession, a new ViewModel does NOT resume the ended session — it starts a
+    //     fresh one.
+    @Test
+    fun endSession_endedSessionIsNeverResumedByNewViewModel() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("This session should end")
+        advanceUntilIdle()
+
+        vm.endSession()
+        advanceUntilIdle()
+
+        val reloaded = newViewModel()
+        advanceUntilIdle()
+
+        assertTrue(reloaded.messages.value.isEmpty())
+        assertFalse(reloaded.sessionFile.name.contains("ended"))
+    }
+
+    // (EB.5-f) An empty session (no messages) makes endSession() a no-op: no Recording inserted,
+    //     no file changes.
+    @Test
+    fun endSession_emptySession_isNoOp() = runTest {
+        val vm = newViewModel()
+        advanceUntilIdle()
+        val fileBefore = vm.sessionFile
+        val existedBefore = fileBefore.exists()
+
+        vm.endSession()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { repo.save(any()) }
+        assertEquals(existedBefore, fileBefore.exists())
+        assertEquals(fileBefore.absolutePath, vm.sessionFile.absolutePath)
+        assertTrue(vm.messages.value.isEmpty())
+    }
+
+    // (EB.5-g) Double-tapping End must not save or end the session twice.
+    @Test
+    fun endSession_calledTwiceBeforeCompleting_savesOnlyOnce() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Only one recording please")
+        advanceUntilIdle()
+
+        vm.endSession()
+        vm.endSession()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { repo.save(any()) }
+        val endedFiles = conversationsDir().listFiles()?.filter { it.name.contains("ended") } ?: emptyList()
+        assertEquals(1, endedFiles.size)
+    }
+
+    // (EB.5-h) A failure during analysis leaves the session live and resumable (not marked ended),
+    //     so the user can retry End rather than losing the meeting.
+    @Test
+    fun endSession_analysisFailure_leavesSessionResumable() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Keep this session alive")
+        advanceUntilIdle()
+        val originalFile = vm.sessionFile
+
+        coEvery { llm.generate(any(), any<String>()) } throws RuntimeException("model exploded")
+
+        vm.endSession()
+        advanceUntilIdle()
+
+        assertNotNull(vm.error.value)
+        assertTrue("session file should still be live", originalFile.exists())
+        assertEquals(originalFile.absolutePath, vm.sessionFile.absolutePath)
+        assertTrue(vm.messages.value.isNotEmpty())
+        val endedFiles = conversationsDir().listFiles()?.filter { it.name.contains("ended") } ?: emptyList()
+        assertTrue(endedFiles.isEmpty())
+    }
+
+    // (EB.5-i) stopGenerating() must cancel an in-flight endSession() analysis too, not just
+    //     send()'s generation: a cancellation here mirrors the existing analysis-failure fail-safe
+    //     — the session stays live and resumable — no rename, no message clear — but unlike a
+    //     failure, no error is surfaced (cancellation isn't a failure). This is the regression
+    //     endSession()'s NonCancellable rotation tail guards against (a Stop landing mid-rotation
+    //     must not strand the session half-ended: renamed on disk but still live in memory).
+    @Test
+    fun stopGenerating_duringEndSessionAnalysis_cancelsAnalysisLeavesSessionResumable() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Keep this session alive")
+        advanceUntilIdle()
+        val originalFile = vm.sessionFile
+
+        val analysisGate = CompletableDeferred<String>()
+        coEvery { llm.generate(any(), any<String>()) } coAnswers { analysisGate.await() }
+
+        vm.endSession()
+        testDispatcher.scheduler.runCurrent()
+        assertTrue(vm.isGenerating.value)
+
+        vm.stopGenerating()
+        advanceUntilIdle()
+
+        assertFalse("isGenerating must clear on cancellation", vm.isGenerating.value)
+        assertNull("cancellation must not surface as an error", vm.error.value)
+        assertTrue("session file should still be live, not renamed", originalFile.exists())
+        assertEquals(originalFile.absolutePath, vm.sessionFile.absolutePath)
+        assertTrue(vm.messages.value.isNotEmpty())
+        val endedFiles = conversationsDir().listFiles()?.filter { it.name.contains("ended") } ?: emptyList()
+        assertTrue("session must not be marked ended by a cancelled analysis", endedFiles.isEmpty())
+
+        analysisGate.complete("{}")
+    }
+
+    // (EB.5-j) After a cancelled endSession(), retrying End completes normally: saves + rotates,
+    //     exactly like an uninterrupted End would.
+    @Test
+    fun endSession_retryAfterCancellation_completesNormally() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Keep this session alive")
+        advanceUntilIdle()
+
+        val analysisGate = CompletableDeferred<String>()
+        coEvery { llm.generate(any(), any<String>()) } coAnswers { analysisGate.await() }
+        vm.endSession()
+        testDispatcher.scheduler.runCurrent()
+        vm.stopGenerating()
+        advanceUntilIdle()
+
+        coEvery { llm.generate(any(), any<String>()) } returns
+            """{"title":"t","shortSummary":"s","fullSummary":"f","mindMap":"","topics":[]}"""
+        vm.endSession()
+        advanceUntilIdle()
+
+        assertNull(vm.error.value)
+        assertFalse(vm.isGenerating.value)
+        assertTrue(vm.messages.value.isEmpty())
+        val endedFiles = conversationsDir().listFiles()?.filter { it.name.contains("ended") } ?: emptyList()
+        assertEquals(1, endedFiles.size)
+    }
+
+    // (EB.5-k) generate()'s 3-minute timeout during endSession's analysis arrives as a
+    //     CancellationException subtype, so it must NOT be mistaken for a stopGenerating()
+    //     cancellation: it is a real failure and has to reach the user as an error.
+    @Test
+    fun endSession_analysisTimesOut_setsErrorLeavesSessionResumable() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Keep this session alive")
+        advanceUntilIdle()
+        val originalFile = vm.sessionFile
+
+        coEvery { llm.generate(any(), any<String>()) } coAnswers {
+            withTimeout(1) { delay(10_000) }
+            "unreachable"
+        }
+
+        vm.endSession()
+        advanceUntilIdle()
+
+        assertNotNull("a timeout must surface as an error", vm.error.value)
+        assertFalse(vm.isGenerating.value)
+        assertTrue("session file should still be live", originalFile.exists())
+        val endedFiles = conversationsDir().listFiles()?.filter { it.name.contains("ended") } ?: emptyList()
+        assertTrue(endedFiles.isEmpty())
+    }
+
+    // (P8.4-a) stopGenerating() during an in-flight generate: no model message appended, no
+    //     error surfaced (cancellation is not a failure), isGenerating clears, and the user's
+    //     turn stays in both the message list and the session file. A subsequent send() must
+    //     work normally afterward.
+    @Test
+    fun stopGenerating_duringGeneration_noModelMessageNoErrorUserPersistedNextSendWorks() = runTest {
+        val gate = CompletableDeferred<String>()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } coAnswers { gate.await() }
+        val vm = newViewModel()
+
+        vm.send("Thinking out loud")
+        testDispatcher.scheduler.runCurrent()
+        assertTrue(vm.isGenerating.value)
+
+        vm.stopGenerating()
+        advanceUntilIdle()
+
+        assertFalse("isGenerating must clear on cancellation", vm.isGenerating.value)
+        assertNull("cancellation must not surface as an error", vm.error.value)
+        assertEquals(1, vm.messages.value.size)
+        assertEquals(Role.USER, vm.messages.value[0].role)
+        val content = vm.sessionFile.readText()
+        assertTrue(content.contains("Thinking out loud"))
+        assertFalse("no model turn should have been appended", content.contains("**Agent**"))
+
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply after stop"
+        vm.send("Second try")
+        advanceUntilIdle()
+
+        assertEquals(3, vm.messages.value.size)
+        assertEquals(Role.MODEL, vm.messages.value[2].role)
+        assertEquals("Reply after stop", vm.messages.value[2].text)
+        assertNull(vm.error.value)
+    }
+
+    // (P8.4-a) generate()'s 3-minute timeout arrives as a CancellationException subtype, so it
+    //     must NOT be mistaken for a stopGenerating() cancellation: it is a real failure and has
+    //     to reach the user as an error, exactly as any other generation failure does.
+    @Test
+    fun send_llmTimesOut_setsErrorNoModelMessage() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } coAnswers {
+            withTimeout(1) { delay(10_000) }
+            "unreachable"
+        }
+        val vm = newViewModel()
+
+        vm.send("Will this time out?")
+        advanceUntilIdle()
+
+        assertEquals(1, vm.messages.value.size)
+        assertEquals(Role.USER, vm.messages.value[0].role)
+        assertNotNull("a timeout must surface as an error", vm.error.value)
+        assertFalse(vm.isGenerating.value)
+        assertFalse(vm.sessionFile.readText().contains("**Agent**"))
+    }
+
+    // Single-shot guard: send() claims _isGenerating synchronously before any suspension point,
+    // so a second send() call issued while a generation is already in flight is a no-op — it
+    // must not queue a second user message or a second generate() call.
+    @Test
+    fun send_calledAgainWhileGenerating_isNoOp() = runTest {
+        val gate = CompletableDeferred<String>()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } coAnswers { gate.await() }
+        val vm = newViewModel()
+
+        vm.send("First message")
+        testDispatcher.scheduler.runCurrent()
+        assertTrue(vm.isGenerating.value)
+
+        vm.send("Second message, should be dropped")
+        testDispatcher.scheduler.runCurrent()
+
+        assertEquals(1, vm.messages.value.size)
+        assertEquals("First message", vm.messages.value[0].text)
+
+        gate.complete("ok")
+        advanceUntilIdle()
+        assertEquals(2, vm.messages.value.size)
+    }
+
+    // send() ignores blank/whitespace-only input, and never claims _isGenerating for it.
+    @Test
+    fun send_blankText_isNoOp() = runTest {
+        val vm = newViewModel()
+
+        vm.send("   ")
+        advanceUntilIdle()
+
+        assertTrue(vm.messages.value.isEmpty())
+        assertFalse(vm.isGenerating.value)
+    }
+
+    // (EB.4-h) While the running history stays under the context budget, the full history is
+    //     sent as-is and no summarization call is made.
+    @Test
+    fun send_historyUnderBudget_sendsFullHistoryNoSummaryCall() = runTest {
+        val summaryCalls = mutableListOf<String>()
+        val replyCalls = mutableListOf<List<ChatTurn>>()
+        coEvery { llm.generate(any(), capture(summaryCalls)) } returns "unused"
+        coEvery { llm.generate(any(), capture(replyCalls)) } returnsMany listOf("first reply", "second reply")
+        val vm = newViewModel(contextBudgetChars = 2_000)
+
+        vm.send("short message one")
+        advanceUntilIdle()
+        vm.send("short message two")
+        advanceUntilIdle()
+
+        assertTrue("no summary call expected while under budget", summaryCalls.isEmpty())
+        assertEquals(3, replyCalls.last().size)
+    }
+
+    // (EB.4-i)+(j) Once the running history exceeds the context budget, the older portion is
+    //     summarized (compounding on top of any prior summary) and only the recent tail is sent,
+    //     keeping the live context within budget. The session file (full-transcript guarantee)
+    //     is unaffected by rollover.
+    @Test
+    fun send_historyExceedsBudget_summarizesOlderTurnsCompoundsAndCapsContext() = runTest {
+        val budget = 700
+        val systemPromptCalls = mutableListOf<String>()
+        val summaryCalls = mutableListOf<String>()
+        val replyCalls = mutableListOf<List<ChatTurn>>()
+        coEvery { llm.generate(capture(systemPromptCalls), capture(summaryCalls)) } returnsMany
+            listOf("Rolling summary one.", "Rolling summary two.")
+        coEvery { llm.generate(capture(systemPromptCalls), capture(replyCalls)) } returns "reply"
+        val vm = newViewModel(contextBudgetChars = budget)
+        val pad = "x".repeat(60)
+
+        // Four exchanges: the running total crosses the budget partway through the 4th send,
+        // triggering the first rollover.
+        vm.send("FIRST_MARKER $pad"); advanceUntilIdle()
+        vm.send("second $pad"); advanceUntilIdle()
+        vm.send("third $pad"); advanceUntilIdle()
+        vm.send("TAIL_MARKER $pad"); advanceUntilIdle()
+
+        assertEquals("expected exactly one summary call at the first rollover", 1, summaryCalls.size)
+        assertTrue(summaryCalls[0].contains("FIRST_MARKER"))
+        assertFalse(summaryCalls[0].contains("TAIL_MARKER"))
+
+        val firstRolloverReplyTurns = replyCalls.last()
+        assertTrue(firstRolloverReplyTurns.none { it.text.contains("FIRST_MARKER") })
+        assertTrue(firstRolloverReplyTurns.any { it.text.contains("TAIL_MARKER") })
+        val firstRolloverSystemPrompt = systemPromptCalls[systemPromptCalls.size - 1]
+        val totalContextChars = firstRolloverSystemPrompt.length +
+            firstRolloverReplyTurns.sumOf { it.text.length }
+        assertTrue("live context ($totalContextChars) must fit the budget ($budget)", totalContextChars <= budget)
+
+        // The tail must still start with a USER turn: buildGemmaPrompt folds the system prompt
+        // (carrying the summary) into a leading USER turn only, and silently drops it otherwise.
+        assertEquals(Role.USER, firstRolloverReplyTurns.first().role)
+        val prompt = buildGemmaPrompt(firstRolloverSystemPrompt, firstRolloverReplyTurns)
+        assertTrue(
+            "the rolling summary must actually reach the model's prompt",
+            prompt.contains("Rolling summary one.")
+        )
+
+        // One more send pushes past the budget again; the second summary call must compound on
+        // top of the first rolling summary.
+        vm.send("fourth $pad"); advanceUntilIdle()
+
+        assertEquals("expected a second summary call at the second rollover", 2, summaryCalls.size)
+        assertTrue(
+            "second summarize input must include the first rolling summary so it compounds",
+            summaryCalls[1].contains("Rolling summary one.")
+        )
+
+        // The session file keeps every turn verbatim regardless of rollover.
+        val fileContent = vm.sessionFile.readText()
+        assertTrue(fileContent.contains("FIRST_MARKER"))
+        assertTrue(fileContent.contains("TAIL_MARKER"))
+        assertTrue(fileContent.contains("fourth"))
+    }
+
+    // (EB.4-k) If the summarize call throws, the send must not fail or surface an error — fall
+    //     back to plain tail-truncation for that send, and retry summarizing on the next rollover.
+    @Test
+    fun send_summaryCallThrows_fallsBackToTailTruncationWithoutErrorAndRetriesNextTime() = runTest {
+        val budget = 700
+        var summaryCallCount = 0
+        val replyCalls = mutableListOf<List<ChatTurn>>()
+        coEvery { llm.generate(any(), any<String>()) } answers {
+            summaryCallCount++
+            throw RuntimeException("summary failed")
+        }
+        coEvery { llm.generate(any(), capture(replyCalls)) } returns "reply"
+        val vm = newViewModel(contextBudgetChars = budget)
+        val pad = "x".repeat(60)
+
+        vm.send("FIRST_MARKER $pad"); advanceUntilIdle()
+        vm.send("second $pad"); advanceUntilIdle()
+        vm.send("third $pad"); advanceUntilIdle()
+        vm.send("TAIL_MARKER $pad"); advanceUntilIdle()
+
+        assertEquals(1, summaryCallCount)
+        assertNull("summary failure must not surface as a user-visible error", vm.error.value)
+        assertFalse(vm.isGenerating.value)
+        val fallbackTurns = replyCalls.last()
+        assertTrue(fallbackTurns.none { it.text.contains("FIRST_MARKER") })
+        assertTrue(fallbackTurns.any { it.text.contains("TAIL_MARKER") })
+
+        // Next rollover retries summarizing rather than giving up permanently.
+        vm.send("fifth $pad"); advanceUntilIdle()
+        assertEquals(2, summaryCallCount)
+    }
+
+    // (EB.4-l) The summarizer's output length is not guaranteed and each rollover feeds the
+    //     previous summary back in, so an over-long summary must be clamped before injection —
+    //     otherwise the compounding summary defeats the very cap it exists to enforce.
+    @Test
+    fun send_oversizedSummary_isClampedBeforeInjection() = runTest {
+        val budget = 700
+        val replySystemPrompts = mutableListOf<String>()
+        coEvery { llm.generate(any(), any<String>()) } returns "S".repeat(5_000)
+        coEvery { llm.generate(capture(replySystemPrompts), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel(contextBudgetChars = budget)
+        val pad = "x".repeat(60)
+
+        vm.send("first $pad"); advanceUntilIdle()
+        vm.send("second $pad"); advanceUntilIdle()
+        vm.send("third $pad"); advanceUntilIdle()
+        vm.send("fourth $pad"); advanceUntilIdle()
+
+        val injected = replySystemPrompts.last().substringAfter("so far: ")
+        assertEquals(175, injected.length)
+    }
+
+    // (EB.4-m) A later summarize failure must not throw away a summary an earlier rollover
+    //     already earned — falling back to the bare system prompt would lose that context for
+    //     nothing, since the tail-only send is already a subset of the over-budget context.
+    @Test
+    fun send_summaryFailsAfterEarlierSuccess_keepsPreviousSummary() = runTest {
+        val budget = 700
+        val replySystemPrompts = mutableListOf<String>()
+        coEvery { llm.generate(any(), any<String>()) } returns "Rolling summary one." andThenThrows
+            RuntimeException("summary failed")
+        coEvery { llm.generate(capture(replySystemPrompts), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel(contextBudgetChars = budget)
+        val pad = "x".repeat(60)
+
+        vm.send("first $pad"); advanceUntilIdle()
+        vm.send("second $pad"); advanceUntilIdle()
+        vm.send("third $pad"); advanceUntilIdle()
+        vm.send("fourth $pad"); advanceUntilIdle()
+        assertTrue(replySystemPrompts.last().contains("Rolling summary one."))
+
+        vm.send("fifth $pad"); advanceUntilIdle()
+
+        assertNull(vm.error.value)
+        assertTrue(
+            "the earlier rolling summary must survive a later summarize failure",
+            replySystemPrompts.last().contains("Rolling summary one.")
+        )
+    }
+
+    // (EC.1-a) start -> stop: recorder started/stopped, transcription invoked with the recorded
+    //     file, voiceTranscript exposes the text, and the temp audio file is deleted afterward.
+    @Test
+    fun voiceInput_startThenStop_transcribesAndCleansUpTempFile() = runTest {
+        markWhisperReady()
+        val startedFile = slot<File>()
+        every { audioRecorder.start(capture(startedFile), any()) } answers {
+            startedFile.captured.parentFile?.mkdirs()
+            startedFile.captured.writeBytes(byteArrayOf(1, 2, 3))
+        }
+        coEvery { transcriptionService.transcribe(any()) } returns "hello there"
+        val vm = newViewModel()
+
+        vm.startVoiceInput()
+        assertTrue(vm.isRecordingVoice.value)
+        verify { audioRecorder.start(any(), any()) }
+
+        vm.stopVoiceInput()
+        verify { audioRecorder.stop() }
+        assertFalse(vm.isRecordingVoice.value)
+
+        advanceUntilIdle()
+
+        assertFalse(vm.isTranscribing.value)
+        assertEquals("hello there", vm.voiceTranscript.value)
+        coVerify { transcriptionService.transcribe(startedFile.captured) }
+        assertFalse("temp audio file should be deleted after transcription", startedFile.captured.exists())
+        assertNull(vm.error.value)
+    }
+
+    // (EC.1-a) The temp recording file lives under cacheDir/voice_input.
+    @Test
+    fun voiceInput_tempFile_createdUnderCacheDirVoiceInput() = runTest {
+        markWhisperReady()
+        val startedFile = slot<File>()
+        every { audioRecorder.start(capture(startedFile), any()) } answers {
+            startedFile.captured.parentFile?.mkdirs()
+            startedFile.captured.writeBytes(byteArrayOf(1, 2, 3))
+        }
+        val vm = newViewModel()
+
+        vm.startVoiceInput()
+
+        val expectedDir = File(application.cacheDir, "voice_input")
+        assertEquals(expectedDir.absolutePath, startedFile.captured.parentFile?.absolutePath)
+        assertTrue(startedFile.captured.name.startsWith("voice_"))
+        assertTrue(startedFile.captured.name.endsWith(".m4a"))
+    }
+
+    // (EC.1-b) An empty/whitespace transcription result sets the error flow with a short message
+    //     and does not populate voiceTranscript.
+    @Test
+    fun voiceInput_emptyTranscription_setsErrorNoTranscript() = runTest {
+        markWhisperReady()
+        every { audioRecorder.start(any(), any()) } returns Unit
+        coEvery { transcriptionService.transcribe(any()) } returns "   "
+        val vm = newViewModel()
+
+        vm.startVoiceInput()
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+
+        assertEquals("Didn't catch that", vm.error.value)
+        assertNull(vm.voiceTranscript.value)
+        assertFalse(vm.isTranscribing.value)
+    }
+
+    // (EC.1-c) A transcription failure sets the error flow, clears isTranscribing/isRecordingVoice,
+    //     and still cleans up the temp file.
+    @Test
+    fun voiceInput_transcriptionThrows_setsErrorClearsStateAndCleansUpTempFile() = runTest {
+        markWhisperReady()
+        val startedFile = slot<File>()
+        every { audioRecorder.start(capture(startedFile), any()) } answers {
+            startedFile.captured.parentFile?.mkdirs()
+            startedFile.captured.writeBytes(byteArrayOf(1, 2, 3))
+        }
+        coEvery { transcriptionService.transcribe(any()) } throws RuntimeException("boom")
+        val vm = newViewModel()
+
+        vm.startVoiceInput()
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+
+        assertNotNull(vm.error.value)
+        assertFalse(vm.isTranscribing.value)
+        assertFalse(vm.isRecordingVoice.value)
+        assertNull(vm.voiceTranscript.value)
+        assertFalse("temp audio file should still be cleaned up", startedFile.captured.exists())
+    }
+
+    // (EC.1-d) If the Whisper model isn't downloaded, starting voice input sets an error
+    //     directing the user to Settings and never starts the recorder.
+    @Test
+    fun voiceInput_modelUnavailable_setsErrorAndNeverStartsRecorder() = runTest {
+        val vm = newViewModel()
+
+        vm.startVoiceInput()
+
+        assertFalse(vm.isRecordingVoice.value)
+        assertNotNull(vm.error.value)
+        verify(exactly = 0) { audioRecorder.start(any(), any()) }
+    }
+
+    // (EC.1-d2) Busy guards: startVoiceInput() is a no-op while already recording, transcribing,
+    //     or generating.
+    @Test
+    fun startVoiceInput_alreadyRecording_isNoOp() = runTest {
+        markWhisperReady()
+        val vm = newViewModel()
+
+        vm.startVoiceInput()
+        vm.startVoiceInput()
+
+        verify(exactly = 1) { audioRecorder.start(any(), any()) }
+    }
+
+    @Test
+    fun startVoiceInput_whileTranscribing_isNoOp() = runTest {
+        markWhisperReady()
+        val gate = CompletableDeferred<String>()
+        coEvery { transcriptionService.transcribe(any()) } coAnswers { gate.await() }
+        every { audioRecorder.start(any(), any()) } returns Unit
+        val vm = newViewModel()
+
+        vm.startVoiceInput()
+        vm.stopVoiceInput()
+        testDispatcher.scheduler.runCurrent()
+        assertTrue(vm.isTranscribing.value)
+
+        vm.startVoiceInput()
+
+        verify(exactly = 1) { audioRecorder.start(any(), any()) }
+        gate.complete("ok")
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun startVoiceInput_whileGenerating_isNoOp() = runTest {
+        markWhisperReady()
+        val gate = CompletableDeferred<String>()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } coAnswers { gate.await() }
+        val vm = newViewModel()
+        vm.send("Thinking out loud")
+        testDispatcher.scheduler.runCurrent()
+        assertTrue(vm.isGenerating.value)
+
+        vm.startVoiceInput()
+
+        verify(exactly = 0) { audioRecorder.start(any(), any()) }
+        assertFalse(vm.isRecordingVoice.value)
+
+        gate.complete("ok")
+        advanceUntilIdle()
+    }
+
+    // (EC.1-e) Abandoning an in-progress recording (screen disposed) releases the recorder and
+    //     drops the temp file without transcribing — an unstopped recorder would hold the mic.
+    @Test
+    fun cancelVoiceInput_whileRecording_releasesRecorderAndDropsTempFile() = runTest {
+        markWhisperReady()
+        val startedFile = slot<File>()
+        every { audioRecorder.start(capture(startedFile), any()) } answers {
+            startedFile.captured.parentFile?.mkdirs()
+            startedFile.captured.writeBytes(byteArrayOf(1, 2, 3))
+        }
+        val vm = newViewModel()
+
+        vm.startVoiceInput()
+        vm.cancelVoiceInput()
+        advanceUntilIdle()
+
+        verify { audioRecorder.stop() }
+        assertFalse(vm.isRecordingVoice.value)
+        assertFalse(vm.isTranscribing.value)
+        assertNull(vm.voiceTranscript.value)
+        assertFalse("abandoned audio file should be deleted", startedFile.captured.exists())
+        coVerify(exactly = 0) { transcriptionService.transcribe(any()) }
+    }
+
+    // (EC.1-f) Cancelling with nothing in flight is a no-op — it must not touch the recorder.
+    @Test
+    fun cancelVoiceInput_whenIdle_isNoOp() = runTest {
+        val vm = newViewModel()
+
+        vm.cancelVoiceInput()
+
+        verify(exactly = 0) { audioRecorder.stop() }
+        assertFalse(vm.isRecordingVoice.value)
+    }
+
+    // (EC.1-g) onCleared() abandons an in-progress recording rather than leaking the mic.
+    @Test
+    fun onCleared_cancelsInProgressVoiceRecording() = runTest {
+        markWhisperReady()
+        val startedFile = slot<File>()
+        every { audioRecorder.start(capture(startedFile), any()) } answers {
+            startedFile.captured.parentFile?.mkdirs()
+            startedFile.captured.writeBytes(byteArrayOf(1, 2, 3))
+        }
+        val vm = newViewModel()
+        vm.startVoiceInput()
+
+        val method = ConversationViewModel::class.java.getDeclaredMethod("onCleared")
+        method.isAccessible = true
+        method.invoke(vm)
+
+        verify { audioRecorder.stop() }
+        assertFalse(vm.isRecordingVoice.value)
+        assertFalse("abandoned audio file should be deleted", startedFile.captured.exists())
+    }
+
+    // (EC.1-h) clearVoiceTranscript() resets the transcript flow so the screen can consume it once.
+    @Test
+    fun clearVoiceTranscript_resetsToNull() = runTest {
+        markWhisperReady()
+        every { audioRecorder.start(any(), any()) } returns Unit
+        coEvery { transcriptionService.transcribe(any()) } returns "some text"
+        val vm = newViewModel()
+
+        vm.startVoiceInput()
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+        assertEquals("some text", vm.voiceTranscript.value)
+
+        vm.clearVoiceTranscript()
+
+        assertNull(vm.voiceTranscript.value)
+    }
+
+    // (EC.1-i) startVoiceInputInterruptingSpeech() delegates to startVoiceInput().
+    @Test
+    fun startVoiceInputInterruptingSpeech_delegatesToStartVoiceInput() = runTest {
+        markWhisperReady()
+        val vm = newViewModel()
+
+        vm.startVoiceInputInterruptingSpeech()
+
+        assertTrue(vm.isRecordingVoice.value)
+        verify(exactly = 1) { audioRecorder.start(any(), any()) }
+    }
+
+    // (#24) A MODEL reply speaks through the TTS wrapper when the toggle is enabled and TTS is
+    //     available.
+    @Test
+    fun send_ttsEnabled_speaksModelReply() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Here's a reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        verify(exactly = 1) { tts.speak("Here's a reply") }
+    }
+
+    // (#24) No speak() call when the toggle is disabled (the default).
+    @Test
+    fun send_ttsDisabled_doesNotSpeak() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Here's a reply"
+        val vm = newViewModel()
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        verify(exactly = 0) { tts.speak(any()) }
+    }
+
+    // (#24) Even with the toggle enabled, an unavailable TTS engine never speaks — this must
+    //     behave exactly like disabled, with no error surfaced.
+    @Test
+    fun send_ttsEnabledButUnavailable_doesNotSpeak() = runTest {
+        every { tts.isAvailable } returns false
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Here's a reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        verify(exactly = 0) { tts.speak(any()) }
+        assertNull(vm.error.value)
+    }
+
+    // (#24) The voice-only big-mic path must stop any in-progress TTS playback BEFORE starting
+    //     the recorder — never the reverse, or the recording would start while the reply is still
+    //     audibly being spoken over it.
+    @Test
+    fun startVoiceInputInterruptingSpeech_stopsSpeechBeforeStartingRecording() = runTest {
+        markWhisperReady()
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+
+        vm.startVoiceInputInterruptingSpeech()
+
+        verifyOrder {
+            tts.stop()
+            audioRecorder.start(any(), any())
+        }
+        assertTrue(vm.isRecordingVoice.value)
+    }
+
+    // (#24) send() interrupts any reply still being spoken before starting a new turn — otherwise
+    //     the agent would talk over the exchange it's about to start.
+    @Test
+    fun send_stopsInProgressSpeechBeforeGenerating() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.send("First")
+        advanceUntilIdle()
+
+        vm.send("Second")
+
+        verify(atLeast = 1) { tts.stop() }
+    }
+
+    // (#24) endSession() interrupts any reply still being spoken — otherwise speech from the
+    //     ending exchange would continue over the session rotation.
+    @Test
+    fun endSession_stopsInProgressSpeech() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        vm.endSession()
+
+        verify(atLeast = 1) { tts.stop() }
+    }
+
+    // (#24) startNewSession() interrupts any reply still being spoken — otherwise speech from the
+    //     old session would continue after rotating to a fresh one.
+    @Test
+    fun startNewSession_stopsInProgressSpeech() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        vm.startNewSession()
+
+        verify(atLeast = 1) { tts.stop() }
+    }
+
+    // (#24) onCleared() shuts down the TTS engine it built.
+    @Test
+    fun onCleared_shutsDownTts() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.send("Hello") // builds the engine
+        advanceUntilIdle()
+
+        val method = ConversationViewModel::class.java.getDeclaredMethod("onCleared")
+        method.isAccessible = true
+        method.invoke(vm)
+
+        verify(exactly = 1) { tts.shutdown() }
+    }
+
+    // (#24) A user who never turns spoken replies on must never pay to build the speech engine:
+    //     on a real device that binds the system TextToSpeech service.
+    @Test
+    fun ttsNeverEnabled_neverBuildsSpeechEngine() = runTest {
+        markWhisperReady()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel()
+
+        vm.send("Hello")
+        advanceUntilIdle()
+        vm.startVoiceInput()
+        vm.startNewSession()
+        advanceUntilIdle()
+        vm.stopSpeaking()
+
+        assertEquals(0, ttsConstructions)
+    }
+
+    // (#24) Muting mid-reply silences what is already being spoken.
+    @Test
+    fun setTtsEnabledFalse_stopsSpeechInProgress() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        vm.setTtsEnabled(false)
+
+        // Two stop() calls: send() itself interrupts any prior speech before generating, then
+        // setTtsEnabled(false) stops the reply just spoken.
+        verify(exactly = 2) { tts.stop() }
+    }
+
+    // (#24) The toggle persists to SharedPreferences and is restored by a fresh ViewModel.
+    @Test
+    fun setTtsEnabled_persistsAndRestoredByNewViewModel() = runTest {
+        val vm = newViewModel()
+        assertFalse(vm.ttsEnabled.value)
+
+        vm.setTtsEnabled(true)
+        assertTrue(vm.ttsEnabled.value)
+        assertTrue(prefs().getBoolean("conversation_tts_enabled", false))
+
+        val reloaded = newViewModel()
+        assertTrue(reloaded.ttsEnabled.value)
+    }
+
+    // (#24) isSpeaking reflects the SpeechService wrapper's speaking-changed callback, which the
+    //     ViewModel registers when the engine is built.
+    @Test
+    fun isSpeaking_reflectsWrapperCallbacks() = runTest {
+        val listenerSlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnSpeakingChangedListener(capture(listenerSlot)) } returns Unit
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        assertFalse(vm.isSpeaking.value)
+        listenerSlot.captured(true)
+        assertTrue(vm.isSpeaking.value)
+        listenerSlot.captured(false)
+        assertFalse(vm.isSpeaking.value)
+    }
+
+    // (#24) ttsReady starts null ("still starting") and flips true when the wrapper reports the
+    //     engine ready, mirroring how isSpeaking reflects the speaking-changed callback.
+    @Test
+    fun ttsReady_reflectsWrapperReadyCallback() = runTest {
+        val listenerSlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnReadyChangedListener(capture(listenerSlot)) } returns Unit
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+
+        // Engine is built lazily; trigger it the same way availableVoices() does.
+        vm.availableVoices()
+
+        assertNull(vm.ttsReady.value)
+        listenerSlot.captured(true)
+        assertEquals(true, vm.ttsReady.value)
+    }
+
+    // (#24) A failed init must be distinguishable from an init still running: the wrapper reports
+    //     false, and that must NOT read as the "still starting" state.
+    @Test
+    fun ttsReady_initFailure_isDistinctFromStillStarting() = runTest {
+        val listenerSlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnReadyChangedListener(capture(listenerSlot)) } returns Unit
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.availableVoices()
+
+        listenerSlot.captured(false)
+
+        assertEquals(false, vm.ttsReady.value)
+        assertNotNull(vm.ttsReady.value)
+    }
+
+    // (#24) The ready listener must be registered at the same point the engine is lazily built
+    //     (mirroring setOnSpeakingChangedListener), so ttsReady tracks a freshly built engine.
+    @Test
+    fun ttsReady_listenerRegisteredWhenEngineBuilt() = runTest {
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+
+        vm.availableVoices() // first touch that builds the engine
+
+        verify(exactly = 1) { tts.setOnReadyChangedListener(any()) }
+        assertEquals(1, ttsConstructions)
+    }
+
+    // (#24) Observing ttsReady with spoken replies off must not build the engine — mirrors
+    //     ttsNeverEnabled_neverBuildsSpeechEngine.
+    @Test
+    fun ttsReady_ttsDisabled_neverBuildsEngine() = runTest {
+        val vm = newViewModel()
+
+        assertNull(vm.ttsReady.value)
+
+        assertEquals(0, ttsConstructions)
+    }
+
+    // (#24) Tapping the speaker while speaking must stop the speech without flipping the
+    //     ttsEnabled preference — distinct from the toggle behavior when not speaking.
+    @Test
+    fun stopSpeaking_whileSpeaking_stopsWithoutChangingTtsEnabledPref() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        vm.stopSpeaking()
+
+        verify(atLeast = 1) { tts.stop() }
+        assertTrue("ttsEnabled pref must be unchanged", vm.ttsEnabled.value)
+    }
+
+    // (#25 / EC.3) setTtsRate persists, applies to the engine, and previews when TTS is enabled.
+    @Test
+    fun setTtsRate_ttsEnabled_persistsAppliesToEngineAndPreviews() = runTest {
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+
+        vm.setTtsRate(1.5f)
+
+        assertEquals(1.5f, vm.ttsRate.value)
+        assertEquals(1.5f, prefs().getFloat(CONVERSATION_TTS_RATE_KEY, -1f))
+        verify(exactly = 1) { tts.setSpeechRate(1.5f) }
+        verify(exactly = 1) { tts.preview(any()) }
+    }
+
+    // (#25 / EC.3) setTtsVoice persists, applies to the engine, and previews when TTS is enabled.
+    @Test
+    fun setTtsVoice_ttsEnabled_persistsAppliesToEngineAndPreviews() = runTest {
+        every { tts.setVoice("Voice-1") } returns true
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+
+        vm.setTtsVoice("Voice-1")
+
+        assertEquals("Voice-1", vm.ttsVoiceId.value)
+        assertEquals("Voice-1", prefs().getString(CONVERSATION_TTS_VOICE_KEY, null))
+        verify(exactly = 1) { tts.setVoice("Voice-1") }
+        verify(exactly = 1) { tts.preview(any()) }
+    }
+
+    // (#25 / EC.3) With TTS disabled and the engine never built, setTtsRate/setTtsVoice must
+    //     persist only — never constructing the speech engine.
+    @Test
+    fun setTtsRateAndVoice_ttsDisabledEngineNeverBuilt_persistOnlyDoNotConstructEngine() = runTest {
+        val vm = newViewModel()
+
+        vm.setTtsRate(1.25f)
+        vm.setTtsVoice("some-voice")
+
+        assertEquals(1.25f, vm.ttsRate.value)
+        assertEquals("some-voice", vm.ttsVoiceId.value)
+        assertEquals(1.25f, prefs().getFloat(CONVERSATION_TTS_RATE_KEY, -1f))
+        assertEquals("some-voice", prefs().getString(CONVERSATION_TTS_VOICE_KEY, null))
+        assertEquals(0, ttsConstructions)
+    }
+
+    // (#25 / EC.3) Persisted rate+voice are applied to the engine when it is first constructed
+    //     (the lazy warm path).
+    @Test
+    fun ttsEngineWarm_appliesPersistedRateAndVoiceOnFirstBuild() = runTest {
+        prefs().edit()
+            .putFloat(CONVERSATION_TTS_RATE_KEY, 1.75f)
+            .putString(CONVERSATION_TTS_VOICE_KEY, "Voice-X")
+            .commit()
+        every { tts.setVoice("Voice-X") } returns true
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        verify(exactly = 1) { tts.setSpeechRate(1.75f) }
+        verify(exactly = 1) { tts.setVoice("Voice-X") }
+        assertEquals(1, ttsConstructions)
+    }
+
+    // (#25 / EC.3) An unknown persisted voice id: setVoice() returns false, and the ViewModel must
+    //     not crash and must NOT clear the pref — it silently falls back to the system default.
+    @Test
+    fun ttsEngineWarm_unknownPersistedVoiceId_setVoiceFalse_noCrashPrefRetained() = runTest {
+        prefs().edit().putString(CONVERSATION_TTS_VOICE_KEY, "Ghost-Voice").commit()
+        every { tts.setVoice("Ghost-Voice") } returns false
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        verify(exactly = 1) { tts.setVoice("Ghost-Voice") }
+        assertEquals("Ghost-Voice", prefs().getString(CONVERSATION_TTS_VOICE_KEY, null))
+        assertNull(vm.error.value)
+    }
+
+    // (#25 / EC.3) availableVoices() passes through to the engine.
+    @Test
+    fun availableVoices_returnsEngineVoices() = runTest {
+        every { tts.availableVoices() } returns listOf(VoiceInfo("a", "Voice 1"), VoiceInfo("b", "Voice 2"))
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+
+        val voices = vm.availableVoices()
+
+        assertEquals(2, voices.size)
+        assertEquals("Voice 1", voices[0].label)
+    }
+
+    // (#25 / EC.3) Opening the voice picker with spoken replies off and the engine never built
+    //     must report no voices rather than binding a TextToSpeech engine the user isn't using.
+    @Test
+    fun availableVoices_ttsDisabledEngineNeverBuilt_returnsEmptyWithoutConstructingEngine() = runTest {
+        every { tts.availableVoices() } returns listOf(VoiceInfo("a", "Voice 1"))
+        val vm = newViewModel()
+
+        assertTrue(vm.availableVoices().isEmpty())
+        assertEquals(0, ttsConstructions)
+    }
+
+    // (#25 / EC.3) With the engine already built but spoken replies switched off, a settings
+    //     change still reaches the engine but must not speak — the user asked for silence.
+    @Test
+    fun setTtsRate_engineBuiltButTtsDisabled_appliesToEngineWithoutPreviewing() = runTest {
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.setTtsRate(1.5f) // builds the engine and previews once
+        vm.setTtsEnabled(false)
+
+        vm.setTtsRate(0.75f)
+
+        assertEquals(0.75f, vm.ttsRate.value)
+        verify(exactly = 1) { tts.setSpeechRate(0.75f) }
+        verify(exactly = 1) { tts.preview(any()) } // still just the enabled-state preview
+    }
+
+    // (#25 / EC.3) Picking "System default" persists the empty id and forwards it to the engine,
+    //     which is what restores the engine's original voice after a custom one was applied live.
+    @Test
+    fun setTtsVoice_systemDefault_persistsEmptyIdAndForwardsItToEngine() = runTest {
+        every { tts.setVoice(any()) } returns true
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.setTtsVoice("Voice-1")
+
+        vm.setTtsVoice("")
+
+        assertEquals("", vm.ttsVoiceId.value)
+        assertEquals("", prefs().getString(CONVERSATION_TTS_VOICE_KEY, null))
+        verify(exactly = 1) { tts.setVoice("") }
+    }
+
+    // (#25 / EC.3) Defaults: rate 1.0f, voice "" (system default), before any preference is set.
+    @Test
+    fun ttsRateAndVoice_defaults() = runTest {
+        val vm = newViewModel()
+
+        assertEquals(1.0f, vm.ttsRate.value)
+        assertEquals("", vm.ttsVoiceId.value)
+    }
+
+    // (#26 / ED.1) Instant send ON: a non-blank transcription is sent through the same pipeline
+    //     as send() directly — user+model messages appear, the file gets both turns — and
+    //     voiceTranscript stays null (the input field is never touched on this path).
+    @Test
+    fun voiceInput_instantSendOn_nonBlankTranscription_triggersSendPipeline() = runTest {
+        markWhisperReady()
+        every { audioRecorder.start(any(), any()) } returns Unit
+        coEvery { transcriptionService.transcribe(any()) } returns "let's ship it"
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Great idea!"
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+
+        vm.startVoiceInput()
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+
+        assertNull(vm.voiceTranscript.value)
+        val messages = vm.messages.value
+        assertEquals(2, messages.size)
+        assertEquals(Role.USER, messages[0].role)
+        assertEquals("let's ship it", messages[0].text)
+        assertEquals(Role.MODEL, messages[1].role)
+        assertEquals("Great idea!", messages[1].text)
+
+        val content = vm.sessionFile.readText()
+        assertTrue(content.contains("let's ship it"))
+        assertTrue(content.contains("Great idea!"))
+    }
+
+    // (#26 / ED.1) Instant send ON: transcription is finished once the send starts, so
+    //     isTranscribing must be released while the reply is still generating — otherwise the mic
+    //     button spins "transcribing" for the whole generation and the temp audio file lingers on
+    //     disk.
+    @Test
+    fun voiceInput_instantSendOn_clearsTranscribingWhileGenerating() = runTest {
+        markWhisperReady()
+        val gate = CompletableDeferred<String>()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } coAnswers { gate.await() }
+        every { audioRecorder.start(any(), any()) } returns Unit
+        coEvery { transcriptionService.transcribe(any()) } returns "still thinking"
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+
+        vm.startVoiceInput()
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+
+        assertTrue(vm.isGenerating.value)
+        assertFalse(vm.isTranscribing.value)
+
+        gate.complete("done")
+        advanceUntilIdle()
+        assertFalse(vm.isGenerating.value)
+    }
+
+    // (#26 / ED.1) Instant send ON but the transcription is blank: unchanged "Didn't catch that"
+    //     error, nothing sent, regardless of the toggle.
+    @Test
+    fun voiceInput_instantSendOn_blankTranscription_setsErrorNoSend() = runTest {
+        markWhisperReady()
+        every { audioRecorder.start(any(), any()) } returns Unit
+        coEvery { transcriptionService.transcribe(any()) } returns "   "
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+
+        vm.startVoiceInput()
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+
+        assertEquals("Didn't catch that", vm.error.value)
+        assertNull(vm.voiceTranscript.value)
+        assertTrue(vm.messages.value.isEmpty())
+        coVerify(exactly = 0) { llm.generate(any(), any<List<ChatTurn>>()) }
+    }
+
+    // (#26 / ED.1) Instant send ON but a generation is already in flight (e.g. the user sent typed
+    //     text while the voice recording was still going): the send pipeline's guard must reject
+    //     the instant path so it never double-sends. The transcript must not be lost — it falls
+    //     back to voiceTranscript instead, same as instant send OFF, AND is surfaced through the
+    //     error/snackbar channel — otherwise the user's words vanish into invisible state with no
+    //     sign anything was dropped (instant send ON hides the input field voiceTranscript feeds).
+    @Test
+    fun voiceInput_instantSendOn_generationInProgress_fallsBackToVoiceTranscriptNoCrash() = runTest {
+        markWhisperReady()
+        val gate = CompletableDeferred<String>()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } coAnswers { gate.await() }
+        every { audioRecorder.start(any(), any()) } returns Unit
+        coEvery { transcriptionService.transcribe(any()) } returns "fallback text"
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+
+        vm.startVoiceInput()
+        vm.send("typed while recording")
+        testDispatcher.scheduler.runCurrent()
+        assertTrue(vm.isGenerating.value)
+
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+
+        assertEquals("fallback text", vm.voiceTranscript.value)
+        assertTrue(vm.error.value!!.contains("fallback text"))
+        assertEquals(1, vm.messages.value.count { it.role == Role.USER })
+
+        gate.complete("ok")
+        advanceUntilIdle()
+        assertFalse(vm.isGenerating.value)
+    }
+
+    // (#26 / ED.1) Instant send OFF (the default): a non-blank transcription lands only in
+    //     voiceTranscript, exactly like before this feature existed — nothing is auto-sent.
+    @Test
+    fun voiceInput_instantSendOff_nonBlankTranscription_onlyPopulatesVoiceTranscript() = runTest {
+        markWhisperReady()
+        every { audioRecorder.start(any(), any()) } returns Unit
+        coEvery { transcriptionService.transcribe(any()) } returns "draft text"
+        val vm = newViewModel()
+
+        vm.startVoiceInput()
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+
+        assertEquals("draft text", vm.voiceTranscript.value)
+        assertTrue(vm.messages.value.isEmpty())
+        coVerify(exactly = 0) { llm.generate(any(), any<List<ChatTurn>>()) }
+    }
+
+    // (#26 / ED.1) The toggle persists to SharedPreferences and is restored by a fresh ViewModel.
+    @Test
+    fun setInstantSend_persistsAndRestoredByNewViewModel() = runTest {
+        val vm = newViewModel()
+        assertFalse(vm.instantSend.value)
+
+        vm.setInstantSend(true)
+        assertTrue(vm.instantSend.value)
+        assertTrue(prefs().getBoolean(CONVERSATION_INSTANT_SEND_KEY, false))
+
+        val reloaded = newViewModel()
+        assertTrue(reloaded.instantSend.value)
+    }
+
+    // ---- Per-message replay (#28 / ED.3), ported from notetaker P9.2/P9.4 ----
+
+    // (ED.3-a) replayMessage(id) speaks that message's exact text via the engine and sets
+    //     speakingMessageId to the replayed message's id.
+    @Test
+    fun replayMessage_speaksMessageTextAndSetsSpeakingMessageId() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Here's a reply"
+        val vm = newViewModel()
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+        vm.replayMessage(id)
+
+        verify(exactly = 1) { tts.speak("Here's a reply") }
+        assertEquals(id, vm.speakingMessageId.value)
+    }
+
+    // (ED.3-b) Replaying message B while message A is replaying stops the current utterance first
+    //     and switches speakingMessageId to B — only one utterance plays at a time.
+    @Test
+    fun replayMessage_whileAnotherReplaying_stopsFirstAndSwitchesSpeakingMessageId() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returnsMany listOf("Reply A", "Reply B")
+        val vm = newViewModel()
+        vm.send("First"); advanceUntilIdle()
+        vm.send("Second"); advanceUntilIdle()
+
+        val modelIndices = vm.messages.value.withIndex().filter { it.value.role == Role.MODEL }.map { it.index }
+        val idA = modelIndices[0].toString()
+        val idB = modelIndices[1].toString()
+
+        vm.replayMessage(idA)
+        assertEquals(idA, vm.speakingMessageId.value)
+
+        vm.replayMessage(idB)
+
+        verify(exactly = 2) { tts.stop() } // once per replayMessage call
+        assertEquals(idB, vm.speakingMessageId.value)
+        verify(exactly = 1) { tts.speak("Reply B") }
+    }
+
+    // (ED.3-c) When the wrapper reports speaking=false (utterance finished naturally, or any other
+    //     reason), speakingMessageId clears — a completed replay resets its icon.
+    @Test
+    fun replayMessage_wrapperReportsSpeakingFalse_clearsSpeakingMessageId() = runTest {
+        val listenerSlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnSpeakingChangedListener(capture(listenerSlot)) } returns Unit
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Hello"); advanceUntilIdle()
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+
+        vm.replayMessage(id)
+        assertEquals(id, vm.speakingMessageId.value)
+
+        listenerSlot.captured(false)
+
+        assertNull(vm.speakingMessageId.value)
+    }
+
+    // (ED.3-d) Replay works even with spoken replies OFF: it builds the engine on demand and
+    //     bypasses the ttsEnabled guard, but must never flip the ttsEnabled preference.
+    @Test
+    fun replayMessage_ttsDisabled_buildsEngineAndSpeaksWithoutChangingPref() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Hello"); advanceUntilIdle()
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+        assertFalse(vm.ttsEnabled.value)
+
+        vm.replayMessage(id)
+
+        verify(exactly = 1) { tts.speak("Reply") }
+        assertEquals(1, ttsConstructions)
+        assertFalse("replay must not flip the ttsEnabled pref", vm.ttsEnabled.value)
+        assertFalse(prefs().getBoolean(CONVERSATION_TTS_ENABLED_KEY, false))
+    }
+
+    // (ED.3-e) Other speech-stopping actions (send, startVoiceInput) must stop an in-progress
+    //     replay and clear speakingMessageId — a replay is not exempt from the existing
+    //     "never talk over the user" guarantee.
+    @Test
+    fun send_duringReplay_stopsSpeechAndClearsSpeakingMessageId() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Hello"); advanceUntilIdle()
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+        vm.replayMessage(id)
+        assertEquals(id, vm.speakingMessageId.value)
+
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Second reply"
+        vm.send("Another message")
+
+        assertNull(vm.speakingMessageId.value)
+        advanceUntilIdle()
+    }
+
+    // Echo's plain startVoiceInput() deliberately does not stop speech (that is the whole point
+    // of the separate startVoiceInputInterruptingSpeech() entry point — see its KDoc), so the
+    // "other speech-stopping actions" case ported from notetaker here is that method instead.
+    @Test
+    fun startVoiceInputInterruptingSpeech_duringReplay_stopsSpeechAndClearsSpeakingMessageId() = runTest {
+        markWhisperReady()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Hello"); advanceUntilIdle()
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+        vm.replayMessage(id)
+        assertEquals(id, vm.speakingMessageId.value)
+
+        vm.startVoiceInputInterruptingSpeech()
+
+        assertNull(vm.speakingMessageId.value)
+    }
+
+    // stopSpeaking() is the shared mechanism behind every other speech-stopping action
+    // (endSession, startNewSession, mute-tap, screen dispose) — clearing speakingMessageId there
+    // covers all of them without duplicating a test per caller.
+    @Test
+    fun stopSpeaking_clearsSpeakingMessageId() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Hello"); advanceUntilIdle()
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+        vm.replayMessage(id)
+        assertEquals(id, vm.speakingMessageId.value)
+
+        vm.stopSpeaking()
+
+        assertNull(vm.speakingMessageId.value)
+    }
+
+    // (ED.3-f) The very first replay with spoken replies OFF builds the engine, which reports
+    //     unavailable while its async init runs: the tap must not silently do nothing — it plays
+    //     as soon as the engine reports ready.
+    @Test
+    fun replayMessage_engineStillInitializing_speaksOnceEngineBecomesReady() = runTest {
+        val readySlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnReadyChangedListener(capture(readySlot)) } returns Unit
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Hello"); advanceUntilIdle()
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+
+        every { tts.isAvailable } returns false
+        vm.replayMessage(id)
+
+        verify(exactly = 0) { tts.speak(any()) }
+        assertNull(vm.speakingMessageId.value)
+
+        every { tts.isAvailable } returns true
+        readySlot.captured(true)
+
+        verify(exactly = 1) { tts.speak("Reply") }
+        assertEquals(id, vm.speakingMessageId.value)
+    }
+
+    // (ED.3-g) A pending replay must be dropped, not played, when init fails outright.
+    @Test
+    fun replayMessage_engineInitFails_neverSpeaks() = runTest {
+        val readySlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnReadyChangedListener(capture(readySlot)) } returns Unit
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Hello"); advanceUntilIdle()
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+
+        every { tts.isAvailable } returns false
+        vm.replayMessage(id)
+        readySlot.captured(false)
+
+        verify(exactly = 0) { tts.speak(any()) }
+        assertNull(vm.speakingMessageId.value)
+    }
+
+    // (ED.3-h) Stopping (send, new session, mute, dispose…) between the tap and the engine
+    //     becoming ready cancels the pending replay — it must not start speaking afterwards.
+    @Test
+    fun stopSpeaking_beforeEngineReady_cancelsPendingReplay() = runTest {
+        val readySlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnReadyChangedListener(capture(readySlot)) } returns Unit
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.send("Hello"); advanceUntilIdle()
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+
+        every { tts.isAvailable } returns false
+        vm.replayMessage(id)
+        vm.stopSpeaking()
+
+        every { tts.isAvailable } returns true
+        readySlot.captured(true)
+
+        verify(exactly = 0) { tts.speak(any()) }
+        assertNull(vm.speakingMessageId.value)
+    }
+
+    // (ED.3-i) A replay tapped while a reply is generating is taken over by that reply's
+    //     auto-speak; the replayed bubble must stop claiming to be the one speaking.
+    @Test
+    fun autoSpeak_afterReplayDuringGeneration_clearsSpeakingMessageId() = runTest {
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.send("Hello"); advanceUntilIdle()
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+
+        val gate = CompletableDeferred<String>()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } coAnswers { gate.await() }
+        vm.send("Another message")
+        testDispatcher.scheduler.runCurrent()
+
+        vm.replayMessage(id)
+        assertEquals(id, vm.speakingMessageId.value)
+
+        gate.complete("Second reply")
+        advanceUntilIdle()
+
+        verify(exactly = 1) { tts.speak("Second reply") }
+        assertNull(vm.speakingMessageId.value)
+    }
+
+    // (#29 / ED.4) voiceButtonState derives the single morphing center button's state for the
+    //     voice-only surface, with precedence RECORDING > TRANSCRIBING > GENERATING > IDLE.
+
+    @Test
+    fun voiceButtonState_idleWhenNothingActive() {
+        assertEquals(
+            VoiceButtonState.IDLE,
+            voiceButtonState(isRecordingVoice = false, isTranscribing = false, isGenerating = false)
+        )
+    }
+
+    @Test
+    fun voiceButtonState_recordingWhenRecordingOnly() {
+        assertEquals(
+            VoiceButtonState.RECORDING,
+            voiceButtonState(isRecordingVoice = true, isTranscribing = false, isGenerating = false)
+        )
+    }
+
+    @Test
+    fun voiceButtonState_transcribingWhenTranscribingOnly() {
+        assertEquals(
+            VoiceButtonState.TRANSCRIBING,
+            voiceButtonState(isRecordingVoice = false, isTranscribing = true, isGenerating = false)
+        )
+    }
+
+    @Test
+    fun voiceButtonState_generatingWhenGeneratingOnly() {
+        assertEquals(
+            VoiceButtonState.GENERATING,
+            voiceButtonState(isRecordingVoice = false, isTranscribing = false, isGenerating = true)
+        )
+    }
+
+    // Recording must win even if generation flips true mid-recording (mic-hostage lesson): the
+    // user must always be able to stop a recording they started.
+    @Test
+    fun voiceButtonState_recordingWinsOverGenerating() {
+        assertEquals(
+            VoiceButtonState.RECORDING,
+            voiceButtonState(isRecordingVoice = true, isTranscribing = false, isGenerating = true)
+        )
+    }
+
+    @Test
+    fun voiceButtonState_transcribingWinsOverGenerating() {
+        assertEquals(
+            VoiceButtonState.TRANSCRIBING,
+            voiceButtonState(isRecordingVoice = false, isTranscribing = true, isGenerating = true)
+        )
+    }
+
+    @Test
+    fun voiceButtonState_recordingWinsOverTranscribing() {
+        assertEquals(
+            VoiceButtonState.RECORDING,
+            voiceButtonState(isRecordingVoice = true, isTranscribing = true, isGenerating = false)
+        )
+    }
+
+    @Test
+    fun voiceButtonState_recordingWinsOverTranscribingAndGenerating() {
+        assertEquals(
+            VoiceButtonState.RECORDING,
+            voiceButtonState(isRecordingVoice = true, isTranscribing = true, isGenerating = true)
+        )
+    }
+
+    // ---- Hands-free auto-listen loop (#30 / ED.5), ported from notetaker P9.4/#56/#72 ----
+
+    // (P9.4-a) Both toggles on, TTS off: the model reply landing in performSend() triggers the
+    //     recorder to start right away (the immediate, non-speech path).
+    @Test
+    fun autoListen_bothTogglesOnTtsOff_modelReplyTriggersRecorderStart() = runTest {
+        markWhisperReady()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+        vm.setConversationVisible(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        verify(exactly = 1) { audioRecorder.start(any(), any()) }
+        assertTrue(vm.isRecordingVoice.value)
+    }
+
+    // (P9.4-b) TTS on: the recorder must NOT start while the reply is still being spoken, only
+    //     once the wrapper reports speaking=false for that auto-speak utterance.
+    @Test
+    fun autoListen_ttsOn_startsOnlyAfterAutoSpeakUtteranceFinishes_notBeforehand() = runTest {
+        markWhisperReady()
+        val listenerSlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnSpeakingChangedListener(capture(listenerSlot)) } returns Unit
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+        vm.setConversationVisible(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        verify(exactly = 0) { audioRecorder.start(any(), any()) }
+        assertFalse(vm.isRecordingVoice.value)
+
+        listenerSlot.captured(false)
+
+        verify(exactly = 1) { audioRecorder.start(any(), any()) }
+        assertTrue(vm.isRecordingVoice.value)
+    }
+
+    // (P9.4-b2) A REPLAY finishing must never trigger auto-listen — only the reply's own
+    //     auto-speak utterance (armed via awaitingAutoListen) does.
+    @Test
+    fun autoListen_replayFinishing_neverTriggersRecorderStart() = runTest {
+        markWhisperReady()
+        val listenerSlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnSpeakingChangedListener(capture(listenerSlot)) } returns Unit
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+        vm.setConversationVisible(true)
+        // TTS stays off, so send()'s own auto-listen trigger fires immediately; drain it so it
+        // doesn't interfere with the replay assertion below.
+        vm.send("Hello")
+        advanceUntilIdle()
+        assertTrue(vm.isRecordingVoice.value)
+        vm.cancelVoiceInput()
+
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+        vm.replayMessage(id)
+        listenerSlot.captured(false) // the replay finishes speaking
+
+        assertFalse("a replay finishing must never trigger auto-listen", vm.isRecordingVoice.value)
+    }
+
+    // (P9.4-c) autoListen off (instantSend on) must never trigger.
+    @Test
+    fun autoListen_autoListenOff_noTrigger() = runTest {
+        markWhisperReady()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+        vm.setConversationVisible(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        assertFalse(vm.isRecordingVoice.value)
+        verify(exactly = 0) { audioRecorder.start(any(), any()) }
+    }
+
+    // (P9.4-c2, superseded by #72) This used to assert that setAutoListen(true) alone — which left
+    // instantSend off — never triggered. Under the #72 coupling that combination is no longer
+    // reachable through the public setters, so the case now proves the end-to-end payoff instead:
+    // flipping auto-listen on by itself actually starts the hands-free loop. maybeAutoListen's
+    // !instantSend guard is retained as defence in depth but is consequently no longer covered.
+    @Test
+    fun autoListen_setAutoListenAlone_triggers_sinceInstantSendIsCoupledOn() = runTest {
+        markWhisperReady()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setAutoListen(true)
+        vm.setConversationVisible(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        assertTrue(vm.isRecordingVoice.value)
+        verify(exactly = 1) { audioRecorder.start(any(), any()) }
+    }
+
+    // (P9.4-d) A blank transcription suppresses exactly the next auto-listen trigger; the one
+    //     after that fires normally again.
+    @Test
+    fun autoListen_emptyTranscription_suppressesNextTriggerOnceThenResumes() = runTest {
+        markWhisperReady()
+        every { audioRecorder.start(any(), any()) } returns Unit
+        coEvery { transcriptionService.transcribe(any()) } returns "   "
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+        vm.setConversationVisible(true)
+
+        vm.startVoiceInput()
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+        assertEquals("Didn't catch that", vm.error.value)
+        assertFalse(vm.isRecordingVoice.value)
+
+        vm.send("typed manually")
+        advanceUntilIdle()
+        assertFalse("blank transcription must suppress the very next auto-listen trigger", vm.isRecordingVoice.value)
+
+        vm.send("another message")
+        advanceUntilIdle()
+        assertTrue("suppression must be consumed by the one skipped trigger", vm.isRecordingVoice.value)
+    }
+
+    // (P9.4-d2) A manual mic press clears the suppression outright, independent of any trigger
+    //     having consumed it.
+    @Test
+    fun autoListen_manualStartVoiceInputClearsSuppression() = runTest {
+        markWhisperReady()
+        every { audioRecorder.start(any(), any()) } returns Unit
+        coEvery { transcriptionService.transcribe(any()) } returnsMany listOf("   ", "second try")
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+        vm.setConversationVisible(true)
+
+        vm.startVoiceInput()
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+        assertEquals("Didn't catch that", vm.error.value)
+
+        vm.startVoiceInput() // manual press clears the suppression
+        vm.stopVoiceInput()
+        advanceUntilIdle()
+
+        assertTrue("suppression cleared by the manual press must not block this trigger", vm.isRecordingVoice.value)
+    }
+
+    // (P9.4-e) A trigger must never fire while the conversation screen isn't visible.
+    @Test
+    fun autoListen_notVisible_noTrigger() = runTest {
+        markWhisperReady()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        assertFalse(vm.isRecordingVoice.value)
+        verify(exactly = 0) { audioRecorder.start(any(), any()) }
+    }
+
+    // (P9.4-e2) A trigger that arrives while not visible is dropped, not queued — becoming
+    //     visible afterward must not retroactively fire it.
+    @Test
+    fun autoListen_triggerWhileNotVisible_isDroppedNotQueued() = runTest {
+        markWhisperReady()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+        assertFalse(vm.isRecordingVoice.value)
+
+        vm.setConversationVisible(true)
+
+        assertFalse("a dropped trigger must not fire retroactively on becoming visible", vm.isRecordingVoice.value)
+    }
+
+    // (P9.4-f) stopGenerating() clears an armed auto-listen trigger — no surprise mic after a
+    //     cancelled turn even though the auto-speak utterance keeps "speaking" in the mock.
+    @Test
+    fun autoListen_stopGenerating_clearsArmedTrigger() = runTest {
+        markWhisperReady()
+        val listenerSlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnSpeakingChangedListener(capture(listenerSlot)) } returns Unit
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+        vm.setConversationVisible(true)
+
+        vm.send("Hello")
+        advanceUntilIdle()
+
+        vm.stopGenerating()
+        listenerSlot.captured(false)
+
+        assertFalse("stopGenerating must clear the armed auto-listen trigger", vm.isRecordingVoice.value)
+        verify(exactly = 0) { audioRecorder.start(any(), any()) }
+    }
+
+    // (P9.4-g) The toggle persists to SharedPreferences and is restored by a fresh ViewModel.
+    @Test
+    fun setAutoListen_persistsAndRestoredByNewViewModel() = runTest {
+        val vm = newViewModel()
+        assertFalse(vm.autoListen.value)
+
+        vm.setAutoListen(true)
+        assertTrue(vm.autoListen.value)
+        assertTrue(prefs().getBoolean(CONVERSATION_AUTO_LISTEN_KEY, false))
+
+        val reloaded = newViewModel()
+        assertTrue(reloaded.autoListen.value)
+    }
+
+    // (#72-a) setAutoListen(true) also enables instant send: both flows and both prefs.
+    @Test
+    fun setAutoListen_true_alsoEnablesInstantSend() = runTest {
+        val vm = newViewModel()
+        assertFalse(vm.instantSend.value)
+        assertFalse(vm.autoListen.value)
+
+        vm.setAutoListen(true)
+
+        assertTrue(vm.autoListen.value)
+        assertTrue(vm.instantSend.value)
+        assertTrue(prefs().getBoolean(CONVERSATION_AUTO_LISTEN_KEY, false))
+        assertTrue(prefs().getBoolean(CONVERSATION_INSTANT_SEND_KEY, false))
+    }
+
+    // (#72-b) setInstantSend(false) also disables auto-listen, when both were on: both flows and
+    // both prefs.
+    @Test
+    fun setInstantSend_false_alsoDisablesAutoListen_whenBothOn() = runTest {
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+        assertTrue(vm.instantSend.value)
+        assertTrue(vm.autoListen.value)
+
+        vm.setInstantSend(false)
+
+        assertFalse(vm.instantSend.value)
+        assertFalse(vm.autoListen.value)
+        assertFalse(prefs().getBoolean(CONVERSATION_INSTANT_SEND_KEY, false))
+        assertFalse(prefs().getBoolean(CONVERSATION_AUTO_LISTEN_KEY, false))
+    }
+
+    // (#72-c) setInstantSend(true) alone must not touch auto-listen.
+    @Test
+    fun setInstantSend_true_alone_doesNotTouchAutoListen() = runTest {
+        val vm = newViewModel()
+
+        vm.setInstantSend(true)
+
+        assertTrue(vm.instantSend.value)
+        assertFalse(vm.autoListen.value)
+        assertFalse(prefs().getBoolean(CONVERSATION_AUTO_LISTEN_KEY, false))
+    }
+
+    // (#72-c2) setAutoListen(false) alone must not touch instant send.
+    @Test
+    fun setAutoListen_false_alone_doesNotTouchInstantSend() = runTest {
+        val vm = newViewModel()
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+        assertTrue(vm.instantSend.value)
+
+        vm.setAutoListen(false)
+
+        assertFalse(vm.autoListen.value)
+        assertTrue(vm.instantSend.value)
+        assertTrue(prefs().getBoolean(CONVERSATION_INSTANT_SEND_KEY, false))
+    }
+
+    // (#72-d) Init normalization: prefs holding autoListen=true and instantSend=false (an install
+    // upgrading from a pre-#72-equivalent build, or a restored backup carrying that pair —
+    // BackupManager writes both keys straight to prefs) must be normalized at VM construction to
+    // autoListen=false — the more conservative setting — rather than silently turning instant send
+    // on. The normalization is persisted so it isn't re-applied (and re-logged) on every
+    // subsequent load.
+    @Test
+    fun init_inconsistentPrefs_autoListenTrueInstantSendFalse_normalizesAutoListenToFalse() = runTest {
+        prefs().edit()
+            .putBoolean(CONVERSATION_AUTO_LISTEN_KEY, true)
+            .putBoolean(CONVERSATION_INSTANT_SEND_KEY, false)
+            .commit()
+
+        val vm = newViewModel()
+
+        assertFalse(vm.autoListen.value)
+        assertFalse(vm.instantSend.value)
+        assertFalse(prefs().getBoolean(CONVERSATION_AUTO_LISTEN_KEY, false))
+        assertFalse(prefs().getBoolean(CONVERSATION_INSTANT_SEND_KEY, false))
+    }
+
+    /**
+     * Arms an auto-spoken reply and makes the mock report speaking=false synchronously from
+     * stop(), the way AndroidSpeechService.stop() does — a flushed utterance is not guaranteed to
+     * deliver its completion callback, so the real engine emits that signal from stop() itself.
+     * Tests that a deliberate stop cannot be turned into a hands-free mic depend on it.
+     */
+    private fun sendReplyBeingSpoken(): ConversationViewModel {
+        markWhisperReady()
+        val listenerSlot = slot<(Boolean) -> Unit>()
+        every { tts.setOnSpeakingChangedListener(capture(listenerSlot)) } returns Unit
+        every { tts.stop() } answers { listenerSlot.captured(false) }
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Reply"
+        val vm = newViewModel()
+        vm.setTtsEnabled(true)
+        vm.setInstantSend(true)
+        vm.setAutoListen(true)
+        vm.setConversationVisible(true)
+        return vm
+    }
+
+    // (P9.4-h) Muting mid-reply stops the speech — it must not be read as "the reply finished
+    //     speaking" and open the mic the user just silenced.
+    @Test
+    fun autoListen_muteWhileReplySpeaking_doesNotOpenMic() = runTest {
+        val vm = sendReplyBeingSpoken()
+
+        vm.send("Hello")
+        advanceUntilIdle()
+        vm.setTtsEnabled(false) // mute tap while the reply is being spoken
+
+        assertFalse("muting must not open the mic", vm.isRecordingVoice.value)
+        verify(exactly = 0) { audioRecorder.start(any(), any()) }
+    }
+
+    // (P9.4-h2) A replay tapped while the reply is still being spoken takes the engine over; the
+    //     cut-short reply must not fire the hands-free mic.
+    @Test
+    fun autoListen_replayTappedWhileReplySpeaking_doesNotOpenMic() = runTest {
+        val vm = sendReplyBeingSpoken()
+
+        vm.send("Hello")
+        advanceUntilIdle()
+        val id = vm.messages.value.indexOfLast { it.role == Role.MODEL }.toString()
+        vm.replayMessage(id)
+
+        assertFalse("a replay taking the engine over must not open the mic", vm.isRecordingVoice.value)
+        verify(exactly = 0) { audioRecorder.start(any(), any()) }
+    }
+
+    // (#31 / ED.6) "New conversation" must stay disabled with nothing to lose.
+    @Test
+    fun canStartNewSession_falseWhenNoMessages() {
+        assertFalse(canStartNewSession(emptyList(), isGenerating = false))
+    }
+
+    // (#31 / ED.6) Disabled while a generation is in flight, even with messages present.
+    @Test
+    fun canStartNewSession_falseWhileGenerating() {
+        val messages = listOf(ChatMessage(Role.USER, "hi", 0L))
+        assertFalse(canStartNewSession(messages, isGenerating = true))
+    }
+
+    // (#31 / ED.6) Enabled once there is something to rotate away from and nothing in flight.
+    @Test
+    fun canStartNewSession_trueWithMessagesAndNotGenerating() {
+        val messages = listOf(ChatMessage(Role.USER, "hi", 0L))
+        assertTrue(canStartNewSession(messages, isGenerating = false))
+    }
+
+    // (#56) Core repro: a relevant analyzed note in the library must be retrieved and injected
+    //     into the system prompt sent to the LLM.
+    @Test
+    fun send_embedderReady_injectsRetrievedNoteContextIntoSystemPrompt() = runTest {
+        val note = Recording(
+            filename = "note1.m4a",
+            title = "Solar plans",
+            shortSummary = "Panels on the garage roof",
+            summary = "x",
+            embedding = floatArrayOf(1f, 1f)
+        )
+        every { embedder.isReady } returns true
+        coEvery { embedder.embed(any()) } returns FloatArray(2) { 1f }
+        every { repo.allRecordings } returns flowOf(listOf(note))
+        every { repo.semanticSearch(any(), any(), any(), any()) } returns listOf(note)
+        val systemPrompts = mutableListOf<String>()
+        coEvery { llm.generate(capture(systemPrompts), any<List<ChatTurn>>()) } returns "Here you go"
+        val vm = newViewModel()
+
+        vm.send("what were my solar plans?")
+        advanceUntilIdle()
+
+        val prompt = systemPrompts.last()
+        assertTrue(prompt.contains("Solar plans"))
+        assertTrue(prompt.contains("Panels on the garage roof"))
+    }
+
+    // (#56) Guard: with the embedder not ready, no note context is injected — this may pass
+    //     trivially today (no retrieval happens at all yet) but pins the degrade-safe contract.
+    @Test
+    fun send_embedderNotReady_doesNotInjectNoteContext() = runTest {
+        val note = Recording(
+            filename = "note1.m4a",
+            title = "Solar plans",
+            shortSummary = "Panels on the garage roof",
+            summary = "x",
+            embedding = floatArrayOf(1f, 1f)
+        )
+        every { embedder.isReady } returns false
+        every { repo.allRecordings } returns flowOf(listOf(note))
+        val systemPrompts = mutableListOf<String>()
+        coEvery { llm.generate(capture(systemPrompts), any<List<ChatTurn>>()) } returns "Here you go"
+        val vm = newViewModel()
+
+        vm.send("what were my solar plans?")
+        advanceUntilIdle()
+
+        val prompt = systemPrompts.last()
+        assertFalse(prompt.contains("Solar plans"))
+        assertFalse(prompt.contains("Panels on the garage roof"))
+    }
+
+    // (#56) embed() returning null (embedder ready but embedding failed) must degrade the same
+    //     way as embedder-not-ready: no notes injected, send still succeeds with no error.
+    @Test
+    fun send_embedReturnsNull_doesNotInjectNoteContextAndStillSendsReply() = runTest {
+        every { embedder.isReady } returns true
+        coEvery { embedder.embed(any()) } returns null
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Here you go"
+        val vm = newViewModel()
+
+        vm.send("what were my solar plans?")
+        advanceUntilIdle()
+
+        assertEquals("Here you go", vm.messages.value.last().text)
+        assertNull(vm.error.value)
+    }
+
+    // (#56) Resilience: a failure while retrieving note context (e.g. embed() throws) must not
+    //     break the conversation turn — the reply still comes back with no error surfaced.
+    @Test
+    fun send_noteRetrievalThrows_sendStillSucceedsNoErrorSurfaced() = runTest {
+        every { embedder.isReady } returns true
+        coEvery { embedder.embed(any()) } throws RuntimeException("embed failed")
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Here you go"
+        val vm = newViewModel()
+
+        vm.send("what were my solar plans?")
+        advanceUntilIdle()
+
+        assertEquals("Here you go", vm.messages.value.last().text)
+        assertNull(vm.error.value)
+    }
+
+    // (#56) A relevance floor keeps low-similarity notes out: when semanticSearch finds nothing
+    //     meeting the minScore floor (returns empty), no note title/summary is injected.
+    @Test
+    fun send_noRelevantNotes_doesNotInjectNoteContext() = runTest {
+        val note = Recording(
+            filename = "note1.m4a",
+            title = "Solar plans",
+            shortSummary = "Panels on the garage roof",
+            summary = "x",
+            embedding = floatArrayOf(1f, 1f)
+        )
+        every { embedder.isReady } returns true
+        coEvery { embedder.embed(any()) } returns FloatArray(2) { 1f }
+        every { repo.allRecordings } returns flowOf(listOf(note))
+        every { repo.semanticSearch(any(), any(), any(), any()) } returns emptyList()
+        val systemPrompts = mutableListOf<String>()
+        coEvery { llm.generate(capture(systemPrompts), any<List<ChatTurn>>()) } returns "Here you go"
+        val vm = newViewModel()
+
+        vm.send("help me name my cat")
+        advanceUntilIdle()
+
+        val prompt = systemPrompts.last()
+        assertFalse(prompt.contains("Solar plans"))
+        assertFalse(prompt.contains("Panels on the garage roof"))
+    }
+
+    // (#56) Ended conversation notes must not be handed to semanticSearch as candidates: they
+    //     read as conversational text and would outrank real recordings for conversational
+    //     queries, and the live session already carries its own history.
+    @Test
+    fun send_embedderReady_excludesConversationNotesFromCandidates() = runTest {
+        val conversationNote = Recording(
+            filename = "conv_20260801120000.md",
+            title = "Old chat",
+            summary = "some prior conversation",
+            embedding = floatArrayOf(1f, 1f)
+        )
+        val realNote = Recording(
+            filename = "note1.m4a",
+            title = "Solar plans",
+            shortSummary = "Panels on the garage roof",
+            summary = "x",
+            embedding = floatArrayOf(1f, 1f)
+        )
+        every { embedder.isReady } returns true
+        coEvery { embedder.embed(any()) } returns FloatArray(2) { 1f }
+        every { repo.allRecordings } returns flowOf(listOf(conversationNote, realNote))
+        val candidatesSlot = slot<List<Recording>>()
+        every { repo.semanticSearch(any(), capture(candidatesSlot), any(), any()) } returns listOf(realNote)
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Here you go"
+        val vm = newViewModel()
+
+        vm.send("what were my solar plans?")
+        advanceUntilIdle()
+
+        assertTrue(candidatesSlot.captured.none { it.filename == "conv_20260801120000.md" })
+    }
+
+    // (#67) A note with a backfilled preview but blank summary must still be a retrieval candidate
+    // (not silently excluded), while ended conversation notes stay excluded exactly as (#56) set up.
+    @Test
+    fun send_embedderReady_includesNoteWithShortSummaryButBlankSummaryAsCandidate() = runTest {
+        val conversationNote = Recording(
+            filename = "conv_20260801120000.md",
+            title = "Old chat",
+            summary = "some prior conversation",
+            embedding = floatArrayOf(1f, 1f)
+        )
+        val previewOnlyNote = Recording(
+            filename = "note1.m4a",
+            title = "Solar plans",
+            shortSummary = "Panels on the garage roof",
+            summary = "",
+            embedding = floatArrayOf(1f, 1f)
+        )
+        every { embedder.isReady } returns true
+        coEvery { embedder.embed(any()) } returns FloatArray(2) { 1f }
+        every { repo.allRecordings } returns flowOf(listOf(conversationNote, previewOnlyNote))
+        val candidatesSlot = slot<List<Recording>>()
+        every {
+            repo.semanticSearch(any(), capture(candidatesSlot), any(), any())
+        } returns listOf(previewOnlyNote)
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Here you go"
+        val vm = newViewModel()
+
+        vm.send("what were my solar plans?")
+        advanceUntilIdle()
+
+        assertTrue(candidatesSlot.captured.any { it.filename == "note1.m4a" })
+        assertTrue(candidatesSlot.captured.none { it.filename == "conv_20260801120000.md" })
+    }
+
+    // (#67) A note with BOTH summary and shortSummary blank is genuinely unanalyzed and must stay
+    // excluded from conversation note retrieval.
+    @Test
+    fun send_embedderReady_excludesNoteWithBothSummaryFieldsBlankFromCandidates() = runTest {
+        val unanalyzedNote = Recording(
+            filename = "note1.m4a",
+            title = "Solar plans",
+            shortSummary = "",
+            summary = "",
+            embedding = floatArrayOf(1f, 1f)
+        )
+        every { embedder.isReady } returns true
+        coEvery { embedder.embed(any()) } returns FloatArray(2) { 1f }
+        every { repo.allRecordings } returns flowOf(listOf(unanalyzedNote))
+        val candidatesSlot = slot<List<Recording>>()
+        every {
+            repo.semanticSearch(any(), capture(candidatesSlot), any(), any())
+        } returns emptyList()
+        coEvery { llm.generate(any(), any<List<ChatTurn>>()) } returns "Here you go"
+        val vm = newViewModel()
+
+        vm.send("what were my solar plans?")
+        advanceUntilIdle()
+
+        assertTrue(candidatesSlot.captured.none { it.filename == "note1.m4a" })
+    }
+
+    // (#56) When the injected note context would push the sent payload over the context budget,
+    //     the over-budget guard must drop the notes rather than send an over-budget payload:
+    //     either the note title is absent, or the total sent chars stay within budget. History
+    //     (the user's message/turns) must never be dropped for notes.
+    @Test
+    fun send_rolloverWithNotes_dropsNotesRatherThanExceedingBudget() = runTest {
+        val note = Recording(
+            filename = "note1.m4a",
+            title = "Solar plans",
+            shortSummary = "Panels on the garage roof " + "extra ".repeat(50),
+            summary = "x",
+            embedding = floatArrayOf(1f, 1f)
+        )
+        every { embedder.isReady } returns true
+        coEvery { embedder.embed(any()) } returns FloatArray(2) { 1f }
+        every { repo.allRecordings } returns flowOf(listOf(note))
+        every { repo.semanticSearch(any(), any(), any(), any()) } returns listOf(note)
+        val systemPrompts = mutableListOf<String>()
+        val turnsSlot = mutableListOf<List<ChatTurn>>()
+        coEvery { llm.generate(capture(systemPrompts), capture(turnsSlot)) } returns "Here you go"
+        val budget = 400
+        val vm = newViewModel(contextBudgetChars = budget)
+
+        vm.send(
+            "what were my solar plans, and can you also help me think through a much longer " +
+                "follow-up question about them"
+        )
+        advanceUntilIdle()
+
+        val prompt = systemPrompts.last()
+        val turns = turnsSlot.last()
+        val totalSent = prompt.length + turns.sumOf { it.text.length }
+        assertTrue(
+            "note title must be dropped if the guard didn't keep the payload within budget",
+            !prompt.contains("Solar plans") || totalSent <= budget
+        )
+        assertTrue("user's message must still be present", turns.isNotEmpty())
+    }
+}
