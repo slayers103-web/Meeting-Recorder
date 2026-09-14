@@ -98,6 +98,10 @@ private const val NOTE_RELEVANCE_MIN_SCORE = 0.4f
 // Keeps the last two exchanges (user + model turns) intact in the live context on rollover.
 private const val TAIL_MESSAGE_COUNT = 4
 
+// Start rolling the live conversation context slightly before the hard ceiling so the next
+// generated turn has a small safety margin for prompt/template overhead.
+private const val ROLLOVER_THRESHOLD_FRACTION = 0.9
+
 // Hard ceiling on the injected summary, as a fraction of the context budget. The model is asked
 // for a short summary but its output length is not guaranteed, and each rollover feeds the
 // previous summary back in, so without a clamp a compounding summary could grow the real sent
@@ -930,7 +934,9 @@ class ConversationViewModel @JvmOverloads constructor(
 
         // Nothing to gain from rolling over if the entire unsummarized region is already just
         // the tail — there is no older portion left to summarize away.
-        if (contextChars <= contextBudgetChars || liveMessages.size <= TAIL_MESSAGE_COUNT) {
+        if (contextChars <= (contextBudgetChars * ROLLOVER_THRESHOLD_FRACTION).toInt() ||
+            liveMessages.size <= TAIL_MESSAGE_COUNT
+        ) {
             return finalize(rollingSummary, liveTurns)
         }
 
