@@ -28,9 +28,9 @@ const val WHISPER_ENCODER_FILE = "base-encoder.int8.onnx"
 const val WHISPER_DECODER_FILE = "base-decoder.int8.onnx"
 const val WHISPER_TOKENS_FILE  = "base-tokens.txt"
 private const val WHISPER_HF = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base/resolve/main"
-const val WHISPER_ENCODER_URL  = "$WHISPER_HF/base.en-encoder.int8.onnx"
-const val WHISPER_DECODER_URL  = "$WHISPER_HF/base.en-decoder.int8.onnx"
-const val WHISPER_TOKENS_URL   = "$WHISPER_HF/base.en-tokens.txt"
+const val WHISPER_ENCODER_URL  = "$WHISPER_HF/base-encoder.int8.onnx"
+const val WHISPER_DECODER_URL  = "$WHISPER_HF/base-decoder.int8.onnx"
+const val WHISPER_TOKENS_URL   = "$WHISPER_HF/base-tokens.txt"
 const val WHISPER_TOTAL_BYTES  = 161_000_000L  // ~161 MB combined (multilingual base, int8)
 
 // Universal Sentence Encoder Lite — used by EmbeddingService for semantic note search
