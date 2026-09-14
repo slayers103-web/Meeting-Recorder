@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Arrow뒤로
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -32,7 +32,7 @@ import androidx.compose.ui.unit.dp
 import com.daedalusapps.echo.ai.DEFAULT_PROMPT
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun 프롬프트EditorScreen(on뒤로: () -> Unit) {
+fun PromptEditorScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("daedalus_prefs", Context.MODE_PRIVATE) }
     var promptText by remember {
@@ -44,8 +44,8 @@ fun 프롬프트EditorScreen(on뒤로: () -> Unit) {
             TopAppBar(
                 title = { Text("분석 프롬프트") },
                 navigationIcon = {
-                    IconButton(onClick = on뒤로) {
-                        Icon(Icons.AutoMirrored.Filled.Arrow뒤로, contentDescription = "뒤로")
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "뒤로")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -99,7 +99,7 @@ fun 프롬프트EditorScreen(on뒤로: () -> Unit) {
                     Button(
                         onClick = {
                             prefs.edit().putString("custom_prompt", promptText).apply()
-                            on뒤로()
+                            onBack()
                         },
                         modifier = Modifier.weight(1f)
                     ) { Text("저장") }

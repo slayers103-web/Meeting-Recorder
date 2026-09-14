@@ -85,7 +85,7 @@ private fun formatLastBackupTime(millis: Long): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun 설정Screen(
+fun SettingsScreen(
     recordingViewModel: RecordingViewModel,
     onBack: () -> Unit,
     onNavigateToPromptEditor: () -> Unit = {}
@@ -133,7 +133,7 @@ fun 설정Screen(
         if (useBluetoothMic) {
             recordingViewModel.setUseBluetoothMic(false)
         } else {
-            if (android.os.빌드.VERSION.SDK_INT >= android.os.빌드.VERSION_CODES.S) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                 val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
                     context,
                     android.Manifest.permission.BLUETOOTH_CONNECT
@@ -311,7 +311,7 @@ fun 설정Screen(
                     }
                 }
 
-                // 관리
+                // Management
                 Text("관리", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -372,7 +372,7 @@ fun 설정Screen(
                     )
                 }
 
-                // 로컬 녹음
+                // Local Recording
                 Text("로컬 녹음", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 ExposedDropdownMenuBox(
                     expanded = maxRecordingMenuExpanded,
@@ -405,7 +405,7 @@ fun 설정Screen(
                     }
                 }
 
-                // 할 일 목록
+                // Todo List
                 Text("할 일 목록", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 ExposedDropdownMenuBox(
                     expanded = todoLookbackMenuExpanded,
@@ -438,7 +438,7 @@ fun 설정Screen(
                     }
                 }
 
-                // 백업 및 복원
+                // Backup & Recovery
                 Text("백업 및 복원", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
 
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -570,7 +570,7 @@ fun 설정Screen(
                     }
                 }
 
-                // 개인정보 및 지원
+                // Privacy & Support
                 Text("개인정보 및 지원", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Card(
                     colors = CardDefaults.cardColors(
@@ -632,7 +632,7 @@ fun 설정Screen(
                 }
                 val versionName = packageInfo?.versionName ?: "알 수 없음"
                 val versionCode = packageInfo?.let {
-                    if (android.os.빌드.VERSION.SDK_INT >= android.os.빌드.VERSION_CODES.P) it.long버전Code
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) it.longVersionCode
                     else @Suppress("DEPRECATION") it.versionCode.toLong()
                 } ?: 0L
 

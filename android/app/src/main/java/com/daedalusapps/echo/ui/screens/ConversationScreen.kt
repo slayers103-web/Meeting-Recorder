@@ -90,11 +90,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.daedalusapps.echo.ai.Role
-import com.daedalusapps.echo.ai.음성Info
+import com.daedalusapps.echo.ai.VoiceInfo
 import com.daedalusapps.echo.viewmodel.ChatMessage
-import com.daedalusapps.echo.viewmodel.대화ViewModel
+import com.daedalusapps.echo.viewmodel.ConversationViewModel
 import com.daedalusapps.echo.viewmodel.canStartNewSession
-import com.daedalusapps.echo.viewmodel.음성ButtonState
+import com.daedalusapps.echo.viewmodel.VoiceButtonState
 import com.daedalusapps.echo.viewmodel.voiceButtonState
 
 /**
@@ -107,20 +107,20 @@ import com.daedalusapps.echo.viewmodel.voiceButtonState
  *
  * Also includes the voice-only mode (#29 / ED.4): the same instant-send toggle also switches the
  * input row from the text field + send button to a single morphing center button (see
- * [음성OnlyInputRow]) with a pending-transcription bubble standing in for the not-yet-sent
+ * [VoiceOnlyInputRow]) with a pending-transcription bubble standing in for the not-yet-sent
  * message (see [PendingTranscriptionBubble]) — there is no separate voice-only preference.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun 대화Screen(
-    conversationViewModel: 대화ViewModel,
+fun ConversationScreen(
+    conversationViewModel: ConversationViewModel,
     onBack: () -> Unit
 ) {
     val messages by conversationViewModel.messages.collectAsState()
     val isGenerating by conversationViewModel.isGenerating.collectAsState()
     val error by conversationViewModel.error.collectAsState()
-    val isRecording음성 by conversationViewModel.isRecording음성.collectAsState()
-    val is음성 변환 중 by conversationViewModel.is음성 변환 중.collectAsState()
+    val isRecordingVoice by conversationViewModel.isRecordingVoice.collectAsState()
+    val isTranscribing by conversationViewModel.isTranscribing.collectAsState()
     val voiceTranscript by conversationViewModel.voiceTranscript.collectAsState()
     val ttsEnabled by conversationViewModel.ttsEnabled.collectAsState()
     val isSpeaking by conversationViewModel.isSpeaking.collectAsState()
@@ -133,35 +133,35 @@ fun 대화Screen(
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     var showSpeedDialog by remember { mutableStateOf(false) }
-    var show음성Dialog by remember { mutableStateOf(false) }
-    var showNew대화Dialog by remember { mutableStateOf(false) }
+    var showVoiceDialog by remember { mutableStateOf(false) }
+    var showNewConversationDialog by remember { mutableStateOf(false) }
 
-    // 즉시 전송 ON routes through start음성InputInterruptingSpeech() instead of plain
-    // start음성Input(): the voice-only surface's single center button must stop any playing
+    // Instant send ON routes through startVoiceInputInterruptingSpeech() instead of plain
+    // startVoiceInput(): the voice-only surface's single center button must stop any playing
     // reply before recording — see that function's KDoc. Both permission entry points (already-
     // granted and just-granted-via-launcher) go through this one lambda so the behavior is
     // identical regardless of which path the OS takes.
-    val begin음성Input = {
-        if (instantSend) conversationViewModel.start음성InputInterruptingSpeech()
-        else conversationViewModel.start음성Input()
+    val beginVoiceInput = {
+        if (instantSend) conversationViewModel.startVoiceInputInterruptingSpeech()
+        else conversationViewModel.startVoiceInput()
     }
 
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
-    ) { granted -> if (granted) begin음성Input() }
+    ) { granted -> if (granted) beginVoiceInput() }
 
-    val start음성Input = {
+    val startVoiceInput = {
         val hasPermission = ContextCompat.checkSelfPermission(
             context, Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
-        if (hasPermission) begin음성Input()
+        if (hasPermission) beginVoiceInput()
         else recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     // A pending transcription, shown as a synthetic bubble at the list's end while Whisper runs,
     // keeps the list non-empty even with zero real messages yet — and is an extra item past the
     // last real message, so the auto-scroller must count it too or it lands below the fold.
-    val showPendingBubble = instantSend && is음성 변환 중
+    val showPendingBubble = instantSend && isTranscribing
     val listItemCount = messages.size + if (showPendingBubble) 1 else 0
 
     LaunchedEffect(listItemCount) {
@@ -180,7 +180,7 @@ fun 대화Screen(
     LaunchedEffect(voiceTranscript) {
         voiceTranscript?.let {
             input = if (input.isBlank()) it else "${input.trimEnd()} $it"
-            conversationViewModel.clear음성Transcript()
+            conversationViewModel.clearVoiceTranscript()
         }
     }
 
@@ -189,7 +189,7 @@ fun 대화Screen(
     // or keep talking after the user navigated away.
     DisposableEffect(Unit) {
         onDispose {
-            conversationViewModel.cancel음성Input()
+            conversationViewModel.cancelVoiceInput()
             conversationViewModel.stopSpeaking()
         }
     }
@@ -197,27 +197,27 @@ fun 대화Screen(
     // Keep the screen awake while a voice session is active (#31 / ED.6), so recording/
     // transcribing/speaking/generating doesn't get cut short by the screen locking. Released on
     // idle and on leaving the screen.
-    val voiceActive = isRecording음성 || is음성 변환 중 || isSpeaking || isGenerating
+    val voiceActive = isRecordingVoice || isTranscribing || isSpeaking || isGenerating
     val view = LocalView.current
     DisposableEffect(voiceActive) {
         view.keepScreenOn = voiceActive
         onDispose { view.keepScreenOn = false }
     }
 
-    // 자동 듣기 (#30) only fires while this screen is actually on-screen: ON_RESUME/ON_PAUSE
+    // Auto-listen (#30) only fires while this screen is actually on-screen: ON_RESUME/ON_PAUSE
     // track that, and disposal (e.g. process death) leaves it not-visible rather than stuck true.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> conversationViewModel.set대화Visible(true)
-                Lifecycle.Event.ON_PAUSE -> conversationViewModel.set대화Visible(false)
+                Lifecycle.Event.ON_RESUME -> conversationViewModel.setConversationVisible(true)
+                Lifecycle.Event.ON_PAUSE -> conversationViewModel.setConversationVisible(false)
                 else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
-            conversationViewModel.set대화Visible(false)
+            conversationViewModel.setConversationVisible(false)
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
@@ -236,24 +236,24 @@ fun 대화Screen(
         )
     }
 
-    if (show음성Dialog) {
-        음성Sheet(
+    if (showVoiceDialog) {
+        VoiceSheet(
             conversationViewModel = conversationViewModel,
-            onDismiss = { show음성Dialog = false }
+            onDismiss = { showVoiceDialog = false }
         )
     }
 
-    if (showNew대화Dialog) {
-        New대화Dialog(
-            on저장AndStartNew = {
-                showNew대화Dialog = false
+    if (showNewConversationDialog) {
+        NewConversationDialog(
+            onSaveAndStartNew = {
+                showNewConversationDialog = false
                 conversationViewModel.endSession()
             },
             onStartWithoutSaving = {
-                showNew대화Dialog = false
+                showNewConversationDialog = false
                 conversationViewModel.startNewSession()
             },
-            on취소 = { showNew대화Dialog = false }
+            onCancel = { showNewConversationDialog = false }
         )
     }
 
@@ -311,7 +311,7 @@ fun 대화Screen(
                             text = { Text("음성…") },
                             onClick = {
                                 menuExpanded = false
-                                show음성Dialog = true
+                                showVoiceDialog = true
                             }
                         )
                         DropdownMenuItem(
@@ -341,7 +341,7 @@ fun 대화Screen(
                             enabled = canStartNewSession(messages, isGenerating),
                             onClick = {
                                 menuExpanded = false
-                                showNew대화Dialog = true
+                                showNewConversationDialog = true
                             }
                         )
                     }
@@ -388,15 +388,15 @@ fun 대화Screen(
             }
 
             if (instantSend) {
-                // 음성-only surface (#29 / ED.4): the text field and send button are hidden in
+                // Voice-only surface (#29 / ED.4): the text field and send button are hidden in
                 // favor of one single morphing center button, since every transcription sends
                 // itself the moment it's ready.
-                음성OnlyInputRow(
-                    isRecording음성 = isRecording음성,
-                    is음성 변환 중 = is음성 변환 중,
+                VoiceOnlyInputRow(
+                    isRecordingVoice = isRecordingVoice,
+                    isTranscribing = isTranscribing,
                     isGenerating = isGenerating,
-                    onStart음성Input = start음성Input,
-                    onStopRecording = { conversationViewModel.stop음성Input() },
+                    onStartVoiceInput = startVoiceInput,
+                    onStopRecording = { conversationViewModel.stopVoiceInput() },
                     onStopGenerating = { conversationViewModel.stopGenerating() }
                 )
             } else {
@@ -420,13 +420,13 @@ fun 대화Screen(
                         // can always stop — otherwise a send/end started mid-recording would lock the
                         // mic until it finishes.
                         onClick = {
-                            if (isRecording음성) conversationViewModel.stop음성Input() else start음성Input()
+                            if (isRecordingVoice) conversationViewModel.stopVoiceInput() else startVoiceInput()
                         },
-                        enabled = isRecording음성 || (!isGenerating && !is음성 변환 중)
+                        enabled = isRecordingVoice || (!isGenerating && !isTranscribing)
                     ) {
                         when {
-                            is음성 변환 중 -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            isRecording음성 -> Icon(
+                            isTranscribing -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            isRecordingVoice -> Icon(
                                 Icons.Default.Stop,
                                 contentDescription = "녹음 중지",
                                 tint = MaterialTheme.colorScheme.error
@@ -459,26 +459,26 @@ private val VOICE_ONLY_MIC_SIZE = 72.dp
 
 /**
  * The voice-only surface's single morphing center button (#29 / ED.4): a stop and a mic are never
- * shown at once, so this is one button that morphs by [음성ButtonState] rather than a mic plus a
+ * shown at once, so this is one button that morphs by [VoiceButtonState] rather than a mic plus a
  * separate stop-generating affordance.
  *
- * IDLE shows Mic and starts recording via [onStart음성Input] (which — per
- * [대화ViewModel.start음성InputInterruptingSpeech] — stops any playing reply first).
+ * IDLE shows Mic and starts recording via [onStartVoiceInput] (which — per
+ * [ConversationViewModel.startVoiceInputInterruptingSpeech] — stops any playing reply first).
  * RECORDING shows Stop with a pulsing ring and calls [onStopRecording]; it stays tappable even if
  * generation starts mid-recording (e.g. via endSession), so the user can never be locked out of
  * stopping their own recording (mic-hostage lesson). TRANSCRIBING disables the button and shows a
  * small spinner in its place. GENERATING shows Stop (no pulse) and calls [onStopGenerating].
  */
 @Composable
-private fun 음성OnlyInputRow(
-    isRecording음성: Boolean,
-    is음성 변환 중: Boolean,
+private fun VoiceOnlyInputRow(
+    isRecordingVoice: Boolean,
+    isTranscribing: Boolean,
     isGenerating: Boolean,
-    onStart음성Input: () -> Unit,
+    onStartVoiceInput: () -> Unit,
     onStopRecording: () -> Unit,
     onStopGenerating: () -> Unit
 ) {
-    val state = voiceButtonState(isRecording음성, is음성 변환 중, isGenerating)
+    val state = voiceButtonState(isRecordingVoice, isTranscribing, isGenerating)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -486,7 +486,7 @@ private fun 음성OnlyInputRow(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(contentAlignment = Alignment.Center) {
-            if (state == 음성ButtonState.RECORDING) {
+            if (state == VoiceButtonState.RECORDING) {
                 val transition = rememberInfiniteTransition(label = "mic-pulse")
                 val ringScale by transition.animateFloat(
                     initialValue = 1f,
@@ -511,32 +511,32 @@ private fun 음성OnlyInputRow(
             }
             FilledIconButton(
                 onClick = when (state) {
-                    음성ButtonState.IDLE -> onStart음성Input
-                    음성ButtonState.RECORDING -> onStopRecording
-                    음성ButtonState.GENERATING -> onStopGenerating
-                    음성ButtonState.TRANSCRIBING -> ({})
+                    VoiceButtonState.IDLE -> onStartVoiceInput
+                    VoiceButtonState.RECORDING -> onStopRecording
+                    VoiceButtonState.GENERATING -> onStopGenerating
+                    VoiceButtonState.TRANSCRIBING -> ({})
                 },
-                enabled = state != 음성ButtonState.TRANSCRIBING,
+                enabled = state != VoiceButtonState.TRANSCRIBING,
                 modifier = Modifier.size(VOICE_ONLY_MIC_SIZE)
             ) {
                 when (state) {
-                    음성ButtonState.TRANSCRIBING -> CircularProgressIndicator(
+                    VoiceButtonState.TRANSCRIBING -> CircularProgressIndicator(
                         modifier = Modifier
                             .size(20.dp)
                             .semantics { contentDescription = "음성 변환 중" },
                         strokeWidth = 2.dp
                     )
-                    음성ButtonState.RECORDING -> Icon(
+                    VoiceButtonState.RECORDING -> Icon(
                         Icons.Default.Stop,
                         contentDescription = "녹음 중지",
                         modifier = Modifier.size(32.dp)
                     )
-                    음성ButtonState.GENERATING -> Icon(
+                    VoiceButtonState.GENERATING -> Icon(
                         Icons.Default.Stop,
                         contentDescription = "생성 중지",
                         modifier = Modifier.size(32.dp)
                     )
-                    음성ButtonState.IDLE -> Icon(
+                    VoiceButtonState.IDLE -> Icon(
                         Icons.Default.Mic,
                         contentDescription = "음성 입력 시작",
                         modifier = Modifier.size(32.dp)
@@ -550,12 +550,12 @@ private fun 음성OnlyInputRow(
 /**
  * Synthetic user-side bubble shown at the end of the message list while a voice-only
  * transcription is running (#29 / ED.4): stands in for the not-yet-sent message and is naturally
- * replaced once the real one lands in [대화ViewModel.messages] (or simply disappears, on
+ * replaced once the real one lands in [ConversationViewModel.messages] (or simply disappears, on
  * an empty transcription — the error snackbar covers that case instead).
  *
  * The hand-off does not flicker: `viewModelScope` runs on `Dispatchers.Main.immediate`, so the
  * `launch { performSend(...) }` that appends the real user message runs inline — the message is
- * already in [대화ViewModel.messages] before the transcribing flag that hides this bubble
+ * already in [ConversationViewModel.messages] before the transcribing flag that hides this bubble
  * clears, so both land in the same recomposition.
  */
 @Composable
@@ -639,13 +639,13 @@ private fun ChatBubble(
  * it. Shown only when the menu item that triggers it is enabled, i.e. there are messages to lose.
  */
 @Composable
-private fun New대화Dialog(
-    on저장AndStartNew: () -> Unit,
+private fun NewConversationDialog(
+    onSaveAndStartNew: () -> Unit,
     onStartWithoutSaving: () -> Unit,
-    on취소: () -> Unit
+    onCancel: () -> Unit
 ) {
     AlertDialog(
-        onDismissRequest = on취소,
+        onDismissRequest = onCancel,
         title = { Text("이 대화를 저장할까요?") },
         text = {
             Text(
@@ -654,14 +654,14 @@ private fun New대화Dialog(
             )
         },
         confirmButton = {
-            TextButton(onClick = on저장AndStartNew) { Text("저장") }
+            TextButton(onClick = onSaveAndStartNew) { Text("저장") }
         },
         dismissButton = {
             // Kept short deliberately: this Row cannot wrap, so long labels would push "취소"
             // off the edge of a phone-width dialog. The title and body carry the full meaning.
             Row {
                 TextButton(onClick = onStartWithoutSaving) { Text("저장하지 않음") }
-                TextButton(onClick = on취소) { Text("취소") }
+                TextButton(onClick = onCancel) { Text("취소") }
             }
         }
     )
@@ -674,7 +674,7 @@ private val SPEED_OPTIONS = listOf(0.75f to "0.75×", 1.0f to "1×", 1.25f to "1
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SpeedDialog(
-    conversationViewModel: 대화ViewModel,
+    conversationViewModel: ConversationViewModel,
     onDismiss: () -> Unit
 ) {
     val ttsRate by conversationViewModel.ttsRate.collectAsState()
@@ -711,22 +711,22 @@ private fun SpeedDialog(
 /** Full-width selectable list of "시스템 기본값" + the engine's available voices; each
  *  selection applies (and previews) immediately. Stays open until dismissed (swipe/scrim) so the
  *  user can compare voices. Shows a loading row while the engine is still initializing —
- *  [대화ViewModel.ttsReady] is observed, so the list replaces the loading row as soon as
+ *  [ConversationViewModel.ttsReady] is observed, so the list replaces the loading row as soon as
  *  init finishes without the user needing to reopen the sheet, and a failed init gets its own
  *  message rather than spinning forever. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun 음성Sheet(
-    conversationViewModel: 대화ViewModel,
+private fun VoiceSheet(
+    conversationViewModel: ConversationViewModel,
     onDismiss: () -> Unit
 ) {
-    val tts음성Id by conversationViewModel.tts음성Id.collectAsState()
+    val ttsVoiceId by conversationViewModel.ttsVoiceId.collectAsState()
     val ttsEnabled by conversationViewModel.ttsEnabled.collectAsState()
     val ttsReady by conversationViewModel.ttsReady.collectAsState()
     // Evaluated on every composition, not just in the branch that shows the list: this call is
     // what lazily builds the engine (and so what starts init and eventually flips ttsReady).
     // Moving it inside the `else` branch below would leave the loading row spinning forever.
-    val voices = remember(ttsReady, ttsEnabled) { conversationViewModel.available음성s() }
+    val voices = remember(ttsReady, ttsEnabled) { conversationViewModel.availableVoices() }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -768,13 +768,13 @@ private fun 음성Sheet(
             else -> {
                 LazyColumn(modifier = Modifier.selectableGroup()) {
                     item {
-                        음성Row(
+                        VoiceRow(
                             label = "시스템 기본값",
                             // A persisted id that isn't in the list (unusable/uninstalled voice
                             // data) is one the engine has already fallen back to the default
                             // for, so show that here rather than leaving nothing selected.
-                            selected = tts음성Id.isEmpty() || voices.none { it.id == tts음성Id },
-                            onClick = { conversationViewModel.setTts음성("") }
+                            selected = ttsVoiceId.isEmpty() || voices.none { it.id == ttsVoiceId },
+                            onClick = { conversationViewModel.setTtsVoice("") }
                         )
                     }
                     if (voices.isEmpty()) {
@@ -787,11 +787,11 @@ private fun 음성Sheet(
                             )
                         }
                     }
-                    items(voices) { voice: 음성Info ->
-                        음성Row(
+                    items(voices) { voice: VoiceInfo ->
+                        VoiceRow(
                             label = voice.label,
-                            selected = tts음성Id == voice.id,
-                            onClick = { conversationViewModel.setTts음성(voice.id) }
+                            selected = ttsVoiceId == voice.id,
+                            onClick = { conversationViewModel.setTtsVoice(voice.id) }
                         )
                     }
                 }
@@ -800,9 +800,9 @@ private fun 음성Sheet(
     }
 }
 
-/** A single full-width, tappable "radio + label" row used by [음성Sheet]. */
+/** A single full-width, tappable "radio + label" row used by [VoiceSheet]. */
 @Composable
-private fun 음성Row(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun VoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()

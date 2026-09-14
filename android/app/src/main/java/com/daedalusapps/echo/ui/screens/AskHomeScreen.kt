@@ -29,14 +29,14 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.BluetoothConnected
-import androidx.compose.material.icons.filled.Content복사
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.일시정지
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.공유
-import androidx.compose.material.icons.filled.정지
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -80,7 +80,7 @@ import com.daedalusapps.echo.viewmodel.RecordingViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun 질문HomeScreen(
+fun AskHomeScreen(
     recordingViewModel: RecordingViewModel,
     onNavigateToNote: (String) -> Unit,
     onNavigateToRecordings: () -> Unit,
@@ -94,10 +94,10 @@ fun 질문HomeScreen(
 
     // Local Recording State
     val isRecording by recordingViewModel.isRecording.collectAsState()
-    val is일시정지d by recordingViewModel.is일시정지d.collectAsState()
+    val isPaused by recordingViewModel.isPaused.collectAsState()
     val recordingDurationSeconds by recordingViewModel.recordingDurationSeconds.collectAsState()
     val useBluetoothMic by recordingViewModel.useBluetoothMic.collectAsState()
-    val auto정지Notice by recordingViewModel.auto정지Notice.collectAsState()
+    val autoStopNotice by recordingViewModel.autoStopNotice.collectAsState()
     val snackbar = remember { SnackbarHostState() }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -128,9 +128,9 @@ fun 질문HomeScreen(
     }
 
     val libraryAnswer by recordingViewModel.libraryAnswer.collectAsState()
-    val library출처 by recordingViewModel.library출처.collectAsState()
+    val librarySources by recordingViewModel.librarySources.collectAsState()
     val libraryQuestion by recordingViewModel.libraryQuestion.collectAsState()
-    val is질문ing by recordingViewModel.is질문ing.collectAsState()
+    val isAsking by recordingViewModel.isAsking.collectAsState()
     val aiError by recordingViewModel.aiError.collectAsState()
     val graph by recordingViewModel.globalGraph.collectAsState()
     val exportIntent by recordingViewModel.exportIntent.collectAsState()
@@ -145,10 +145,10 @@ fun 질문HomeScreen(
         }
     }
 
-    LaunchedEffect(auto정지Notice) {
-        auto정지Notice?.let {
+    LaunchedEffect(autoStopNotice) {
+        autoStopNotice?.let {
             snackbar.showSnackbar(it)
-            recordingViewModel.clearAuto정지Notice()
+            recordingViewModel.clearAutoStopNotice()
         }
     }
 
@@ -200,17 +200,17 @@ fun 질문HomeScreen(
                 )
                 Button(
                     onClick = { if (question.isNotBlank()) recordingViewModel.askLibraryQuestion(question) },
-                    enabled = question.isNotBlank() && !is질문ing,
+                    enabled = question.isNotBlank() && !isAsking,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    if (is질문ing) {
+                    if (isAsking) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
                     }
-                    Text(if (is질문ing) "노트 검색 중…" else "질문")
+                    Text(if (isAsking) "노트 검색 중…" else "질문")
                 }
 
-                if (aiError != null && !is질문ing) {
+                if (aiError != null && !isAsking) {
                     Text(
                         text = aiError!!,
                         style = MaterialTheme.typography.bodySmall,
@@ -227,9 +227,9 @@ fun 질문HomeScreen(
                                 .verticalScroll(rememberScrollState())
                                 .padding(12.dp)
                         ) {
-                            질문AnswerContent(
+                            AskAnswerContent(
                                 answer = libraryAnswer!!,
-                                sources = library출처,
+                                sources = librarySources,
                                 onNavigateToNote = onNavigateToNote
                             )
                         }
@@ -240,16 +240,16 @@ fun 질문HomeScreen(
                             horizontalArrangement = Arrangement.End
                         ) {
                             TextButton(onClick = {
-                                val text = MarkdownExporter.exportQa(libraryQuestion, libraryAnswer!!, library출처)
+                                val text = MarkdownExporter.exportQa(libraryQuestion, libraryAnswer!!, librarySources)
                                 clipboard.setText(AnnotatedString(text))
                                 Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
                             }) {
-                                Icon(Icons.Default.Content복사, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text("복사")
                             }
                             TextButton(onClick = { recordingViewModel.exportLibraryAnswer() }) {
-                                Icon(Icons.Default.공유, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text("공유")
                             }
@@ -314,7 +314,7 @@ fun 질문HomeScreen(
                                 modifier = Modifier
                                     .size(10.dp)
                                     .clip(CircleShape)
-                                    .background(if (is일시정지d) Color.Gray else Color.Red)
+                                    .background(if (isPaused) Color.Gray else Color.Red)
                             )
                             
                             // Elapsed duration text
@@ -334,23 +334,23 @@ fun 질문HomeScreen(
                                 )
                             }
 
-                            // 일시정지/재개 button
+                            // Pause/Resume button
                             IconButton(onClick = {
-                                if (is일시정지d) recordingViewModel.resumeLocalRecording()
+                                if (isPaused) recordingViewModel.resumeLocalRecording()
                                 else recordingViewModel.pauseLocalRecording()
                             }) {
                                 Icon(
-                                    imageVector = if (is일시정지d) Icons.Default.PlayArrow else Icons.Default.일시정지,
-                                    contentDescription = if (is일시정지d) "재개" else "일시정지"
+                                    imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                    contentDescription = if (isPaused) "재개" else "일시정지"
                                 )
                             }
 
-                            // 정지 button
+                            // Stop button
                             Button(
                                 onClick = { recordingViewModel.stopLocalRecording() },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color.Red, contentColor = Color.White)
                             ) {
-                                Icon(Icons.Default.정지, contentDescription = "정지 recording", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Stop, contentDescription = "정지 recording", modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text("정지")
                             }
@@ -404,7 +404,7 @@ fun 질문HomeScreen(
 }
 
 @Composable
-private fun 질문AnswerContent(
+private fun AskAnswerContent(
     answer: String,
     sources: List<Recording>,
     onNavigateToNote: (String) -> Unit

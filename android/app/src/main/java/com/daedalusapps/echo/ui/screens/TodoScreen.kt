@@ -18,7 +18,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Arrow뒤로
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.AlertDialog
@@ -67,7 +67,7 @@ import com.daedalusapps.echo.viewmodel.TodoViewModel
 @Composable
 fun TodoScreen(
     todoViewModel: TodoViewModel,
-    on뒤로: () -> Unit
+    onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -117,7 +117,7 @@ fun TodoScreen(
     if (showAddDialog) {
         AddTodoDialog(
             onDismiss = { showAddDialog = false },
-            on저장 = { text ->
+            onSave = { text ->
                 todoViewModel.addTodo(text)
                 showAddDialog = false
             }
@@ -131,8 +131,8 @@ fun TodoScreen(
                 TopAppBar(
                     title = { Text("할 일") },
                     navigationIcon = {
-                        IconButton(onClick = on뒤로) {
-                            Icon(Icons.AutoMirrored.Filled.Arrow뒤로, contentDescription = "뒤로")
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "뒤로")
                         }
                     },
                     actions = {
@@ -199,7 +199,7 @@ fun TodoScreen(
                         todo = todo,
                         onToggleDone = { todoViewModel.toggleDone(todo) },
                         onDelete = { todoViewModel.deleteTodo(todo) },
-                        onEdit저장 = { newText -> todoViewModel.editTodo(todo, newText) }
+                        onEditSave = { newText -> todoViewModel.editTodo(todo, newText) }
                     )
                 }
             }
@@ -213,7 +213,7 @@ private fun TodoSwipeToDeleteCard(
     todo: TodoItem,
     onToggleDone: () -> Unit,
     onDelete: () -> Unit,
-    onEdit저장: (String) -> Unit
+    onEditSave: (String) -> Unit
 ) {
     var showEditDialog by remember { mutableStateOf(false) }
     var editText by remember(todo.id, showEditDialog) { mutableStateOf(todo.text) }
@@ -232,7 +232,7 @@ private fun TodoSwipeToDeleteCard(
             confirmButton = {
                 Button(
                     onClick = {
-                        onEdit저장(editText)
+                        onEditSave(editText)
                         showEditDialog = false
                     },
                     enabled = editText.isNotBlank()
@@ -290,7 +290,7 @@ private fun TodoSwipeToDeleteCard(
 @Composable
 private fun AddTodoDialog(
     onDismiss: () -> Unit,
-    on저장: (String) -> Unit
+    onSave: (String) -> Unit
 ) {
     var text by remember { mutableStateOf("") }
     AlertDialog(
@@ -306,7 +306,7 @@ private fun AddTodoDialog(
         },
         confirmButton = {
             Button(
-                onClick = { on저장(text) },
+                onClick = { onSave(text) },
                 enabled = text.isNotBlank()
             ) { Text("저장") }
         },
@@ -324,16 +324,16 @@ private fun LookbackDialog(
     onConfirm: (Long) -> Unit
 ) {
     val prefs = remember { context.getSharedPreferences("daedalus_prefs", Context.MODE_PRIVATE) }
-    val stored시간 = remember { prefs.getLong(TODO_LOOKBACK_HOURS_KEY, TODO_LOOKBACK_HOURS_DEFAULT) }
-    val initialSelection = remember { lookbackOptionFor(stored시간) }
+    val storedHours = remember { prefs.getLong(TODO_LOOKBACK_HOURS_KEY, TODO_LOOKBACK_HOURS_DEFAULT) }
+    val initialSelection = remember { lookbackOptionFor(storedHours) }
 
-    var selected시간 by remember {
+    var selectedHours by remember {
         mutableStateOf(if (initialSelection is LookbackSelection.Standard) initialSelection.hours else null)
     }
     var customText by remember {
-        mutableStateOf(if (initialSelection is LookbackSelection.직접 설정) initialSelection.hours.toString() else "")
+        mutableStateOf(if (initialSelection is LookbackSelection.Custom) initialSelection.hours.toString() else "")
     }
-    val is직접 설정Selected = selected시간 == null
+    val isCustomSelected = selectedHours == null
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -345,13 +345,13 @@ private fun LookbackDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .selectable(
-                                selected = selected시간 == option.hours,
-                                onClick = { selected시간 = option.hours }
+                                selected = selectedHours == option.hours,
+                                onClick = { selectedHours = option.hours }
                             )
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        RadioButton(selected = selected시간 == option.hours, onClick = { selected시간 = option.hours })
+                        RadioButton(selected = selectedHours == option.hours, onClick = { selectedHours = option.hours })
                         Spacer(Modifier.width(8.dp))
                         Text(option.label)
                     }
@@ -360,17 +360,17 @@ private fun LookbackDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .selectable(
-                            selected = is직접 설정Selected,
-                            onClick = { selected시간 = null }
+                            selected = isCustomSelected,
+                            onClick = { selectedHours = null }
                         )
                         .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    RadioButton(selected = is직접 설정Selected, onClick = { selected시간 = null })
+                    RadioButton(selected = isCustomSelected, onClick = { selectedHours = null })
                     Spacer(Modifier.width(8.dp))
                     Text("직접 설정")
                 }
-                if (is직접 설정Selected) {
+                if (isCustomSelected) {
                     OutlinedTextField(
                         value = customText,
                         onValueChange = { customText = it },
@@ -383,11 +383,11 @@ private fun LookbackDialog(
             }
         },
         confirmButton = {
-            val custom시간 = customText.toLongOrNull()
-            val confirm시간 = if (is직접 설정Selected) custom시간 else selected시간
+            val customHours = customText.toLongOrNull()
+            val confirmHours = if (isCustomSelected) customHours else selectedHours
             Button(
-                onClick = { if (confirm시간 != null) onConfirm(confirm시간) },
-                enabled = confirm시간 != null && (!is직접 설정Selected || confirm시간 > 0)
+                onClick = { if (confirmHours != null) onConfirm(confirmHours) },
+                enabled = confirmHours != null && (!isCustomSelected || confirmHours > 0)
             ) { Text("업데이트") }
         },
         dismissButton = {
