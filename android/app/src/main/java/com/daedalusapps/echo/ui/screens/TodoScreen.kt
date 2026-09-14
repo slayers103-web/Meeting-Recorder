@@ -91,7 +91,7 @@ fun TodoScreen(
     LaunchedEffect(lastExtractCount) {
         if (lastExtractCount != null) {
             val count = lastExtractCount!!
-            snackbar.showSnackbar(if (count > 0) "새 할 일 $count개를 추가했습니다" else "새로운 할 일이 없습니다")
+            snackbar.showSnackbar(if (count > 0) "새 할 일 ${count}개를 추가했습니다" else "새로운 할 일이 없습니다")
             todoViewModel.clearLastExtractCount()
         }
     }
