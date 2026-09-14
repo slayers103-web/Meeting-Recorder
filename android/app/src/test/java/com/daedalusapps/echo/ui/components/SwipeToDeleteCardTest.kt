@@ -57,7 +57,7 @@ class SwipeToDeleteCardTest {
         composeTestRule.onNodeWithText("Delete Item?").assertIsDisplayed()
         composeTestRule.onNodeWithText("This cannot be undone.").assertIsDisplayed()
 
-        composeTestRule.onNodeWithText("Delete").performClick()
+        composeTestRule.onNodeWithText("삭제").performClick()
 
         assertTrue(deleted)
         composeTestRule.onNodeWithText("Delete Item?").assertDoesNotExist()
@@ -82,7 +82,7 @@ class SwipeToDeleteCardTest {
 
         composeTestRule.onNodeWithText("Delete Item?").assertIsDisplayed()
 
-        composeTestRule.onNodeWithText("Cancel").performClick()
+        composeTestRule.onNodeWithText("취소").performClick()
 
         assertFalse(deleted)
         composeTestRule.onNodeWithText("Delete Item?").assertDoesNotExist()

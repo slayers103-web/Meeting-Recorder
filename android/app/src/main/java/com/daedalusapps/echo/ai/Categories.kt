@@ -3,7 +3,7 @@ package com.daedalusapps.echo.ai
 import android.content.Context
 import com.daedalusapps.echo.data.model.Recording
 
-const val OFFLINE_GUARDRAIL = "주의: 당신은 인터넷에 연결되지 않은 오프라인 비서입니다. 웹 검색이나 최신 정보 조회를 할 수 없습니다. 제공된 노트와 대화 내용만 근거로 답변하세요. 사용자가 제공한 내용이 아닌 사실을 임의로 추가하지 마세요. 모든 사용자에게 보이는 답변, 제목, 요약, 주제, 마인드맵, 할 일은 반드시 자연스러운 한국어로 작성하세요."
+const val OFFLINE_GUARDRAIL = "주의: 당신은 인터넷에 연결되지 않은 오프라인 비서입니다. 웹 검색이나 최신 정보 조회를 할 수 없습니다. 제공된 노트와 대화만 근거로 답변하세요. 사실을 임의로 추가하지 마세요. 모든 사용자에게 보이는 답변은 자연스러운 한국어로 작성하세요."
 
 const val AI_TEXT_BUDGET_KEY = "ai_text_budget_chars"
 // Text longer than the budget is split into chunks before LLM analysis.
