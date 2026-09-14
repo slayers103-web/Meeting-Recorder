@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Arrow뒤로
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -32,7 +32,7 @@ import androidx.compose.ui.unit.dp
 import com.daedalusapps.echo.ai.DEFAULT_PROMPT
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PromptEditorScreen(onBack: () -> Unit) {
+fun 프롬프트EditorScreen(on뒤로: () -> Unit) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("daedalus_prefs", Context.MODE_PRIVATE) }
     var promptText by remember {
@@ -42,10 +42,10 @@ fun PromptEditorScreen(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Analysis Prompt") },
+                title = { Text("분석 프롬프트") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    IconButton(onClick = on뒤로) {
+                        Icon(Icons.AutoMirrored.Filled.Arrow뒤로, contentDescription = "뒤로")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -70,7 +70,7 @@ fun PromptEditorScreen(onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "This prompt is sent to Gemma before every transcript. The model must return JSON with the keys: title, shortSummary, topics, mindMap, fullSummary.",
+                    text = "이 프롬프트는 모든 음성 기록 분석 전에 Gemma에 전달됩니다. 모델은 title, shortSummary, topics, mindMap, fullSummary 키를 포함한 JSON을 반환합니다.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -81,7 +81,7 @@ fun PromptEditorScreen(onBack: () -> Unit) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
-                    label = { Text("Prompt") }
+                    label = { Text("프롬프트") }
                 )
 
                 Row(
@@ -94,15 +94,15 @@ fun PromptEditorScreen(onBack: () -> Unit) {
                             promptText = DEFAULT_PROMPT
                         },
                         modifier = Modifier.weight(1f)
-                    ) { Text("Reset to Default") }
+                    ) { Text("기본값으로 초기화") }
 
                     Button(
                         onClick = {
                             prefs.edit().putString("custom_prompt", promptText).apply()
-                            onBack()
+                            on뒤로()
                         },
                         modifier = Modifier.weight(1f)
-                    ) { Text("Save") }
+                    ) { Text("저장") }
                 }
             }
         }

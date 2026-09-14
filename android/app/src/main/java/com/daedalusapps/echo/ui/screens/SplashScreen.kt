@@ -48,13 +48,13 @@ fun SplashScreen(onReady: (modelReady: Boolean) -> Unit) {
                 tint = MaterialTheme.colorScheme.onPrimary
             )
             Text(
-                "Daedalus Echo",
+                "Echo 회의록",
                 style = MaterialTheme.typography.headlineLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onPrimary
             )
             Text(
-                "Your intelligent voice recorder",
+                "한국어 음성 녹음 및 회의록 도우미",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f)
             )

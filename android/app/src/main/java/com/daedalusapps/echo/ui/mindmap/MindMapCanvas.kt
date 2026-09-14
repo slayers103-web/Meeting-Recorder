@@ -54,10 +54,10 @@ fun MindMapCanvas(markdown: String) {
             onDismissRequest = { selectedNode = null },
             title = { Text(node.node.label) },
             text = if (node.node.children.isNotEmpty()) ({
-                Text("Sub-topics:\n" + node.node.children.joinToString("\n") { "• ${it.label}" })
+                Text("하위 주제:\n" + node.node.children.joinToString("\n") { "• ${it.label}" })
             }) else null,
             confirmButton = {
-                TextButton(onClick = { selectedNode = null }) { Text("OK") }
+                TextButton(onClick = { selectedNode = null }) { Text("확인") }
             }
         )
     }

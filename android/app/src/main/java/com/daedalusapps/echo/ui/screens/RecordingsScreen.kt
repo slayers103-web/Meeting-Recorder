@@ -18,11 +18,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Arrow뒤로
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.편집
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -64,17 +64,17 @@ import com.daedalusapps.echo.viewmodel.RecordingViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RecordingsScreen(
+fun 녹음 목록Screen(
     recordingViewModel: RecordingViewModel,
     onNavigateToNote: (String) -> Unit,
-    onBack: () -> Unit
+    on뒤로: () -> Unit
 ) {
     val syncProgress by recordingViewModel.syncProgress.collectAsState()
-    val recordings by recordingViewModel.filteredRecordings.collectAsState()
+    val recordings by recordingViewModel.filtered녹음 목록.collectAsState()
     val searchQuery by recordingViewModel.searchQuery.collectAsState()
 
-    var selectedFilenames by remember { mutableStateOf(setOf<String>()) }
-    val isSelectionMode = selectedFilenames.isNotEmpty()
+    var 개 선택Filenames by remember { mutableStateOf(setOf<String>()) }
+    val isSelectionMode = 개 선택Filenames.isNotEmpty()
 
     // File picker launcher for importing audio
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -90,17 +90,17 @@ fun RecordingsScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    if (isSelectionMode) Text("${selectedFilenames.size} selected")
-                    else Text("Recordings")
+                    if (isSelectionMode) Text("${개 선택Filenames.size} 개 선택")
+                    else Text("녹음 목록")
                 },
                 navigationIcon = {
                     if (isSelectionMode) {
-                        IconButton(onClick = { selectedFilenames = emptySet() }) {
-                            Icon(Icons.Default.Close, contentDescription = "Cancel selection")
+                        IconButton(onClick = { 개 선택Filenames = emptySet() }) {
+                            Icon(Icons.Default.Close, contentDescription = "선택 취소")
                         }
                     } else {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        IconButton(onClick = on뒤로) {
+                            Icon(Icons.AutoMirrored.Filled.Arrow뒤로, contentDescription = "뒤로")
                         }
                     }
                 },
@@ -108,18 +108,18 @@ fun RecordingsScreen(
                     if (isSelectionMode) {
                         IconButton(
                             onClick = {
-                                recordingViewModel.deleteMultipleRecordings(selectedFilenames.toList())
-                                selectedFilenames = emptySet()
+                                recordingViewModel.deleteMultiple녹음 목록(개 선택Filenames.toList())
+                                개 선택Filenames = emptySet()
                             }
                         ) {
                             Icon(
                                 Icons.Default.Delete,
-                                contentDescription = "Delete selected",
+                                contentDescription = "Delete 개 선택",
                             )
                         }
                     } else {
                         IconButton(onClick = { filePickerLauncher.launch("audio/*") }) {
-                            Icon(Icons.Default.FolderOpen, contentDescription = "Import audio files")
+                            Icon(Icons.Default.FolderOpen, contentDescription = "오디오 파일 가져오기")
                         }
                     }
                 },
@@ -157,12 +157,12 @@ fun RecordingsScreen(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { recordingViewModel.setSearchQuery(it) },
-                    placeholder = { Text("Search recordings…") },
+                    placeholder = { Text("녹음 검색…") },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
                             IconButton(onClick = { recordingViewModel.setSearchQuery("") }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear")
+                                Icon(Icons.Default.Close, contentDescription = "지우기")
                             }
                         }
                     },
@@ -173,7 +173,7 @@ fun RecordingsScreen(
                 )
             }
 
-            // Recordings list
+            // 녹음 목록 list
             if (recordings.isEmpty()) {
                 Box(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -184,14 +184,14 @@ fun RecordingsScreen(
                         modifier = Modifier.padding(32.dp)
                     ) {
                         Text(
-                            text = "No recordings found.",
+                            text = "녹음이 없습니다.",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Record locally or import audio files from your device.",
+                            text = "직접 녹음하거나 기기에서 오디오 파일을 가져올 수 있습니다.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
@@ -200,7 +200,7 @@ fun RecordingsScreen(
                         OutlinedButton(onClick = { filePickerLauncher.launch("audio/*") }) {
                             Icon(Icons.Default.FolderOpen, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            Text("Import Audio Files")
+                            Text("오디오 파일 가져오기")
                         }
                     }
                 }
@@ -213,29 +213,29 @@ fun RecordingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(recordings, key = { it.filename }) { recording ->
-                        val isSelected = selectedFilenames.contains(recording.filename)
+                        val isSelected = 개 선택Filenames.contains(recording.filename)
                         RecordingSwipeToDeleteCard(
                             recording = recording,
                             isSelected = isSelected,
                             isSelectionMode = isSelectionMode,
                             onPlay = {
                                 if (isSelectionMode) {
-                                    selectedFilenames = if (isSelected)
-                                        selectedFilenames - recording.filename
+                                    개 선택Filenames = if (isSelected)
+                                        개 선택Filenames - recording.filename
                                     else
-                                        selectedFilenames + recording.filename
+                                        개 선택Filenames + recording.filename
                                 } else {
                                     onNavigateToNote(recording.filename)
                                 }
                             },
                             onLongClick = {
-                                selectedFilenames = selectedFilenames + recording.filename
+                                개 선택Filenames = 개 선택Filenames + recording.filename
                             },
                             onDelete = {
                                 recordingViewModel.deleteRecording(recording.filename)
                             },
-                            onEditSave = { title, summary ->
-                                recordingViewModel.updateTitleAndSummary(
+                            on편집저장 = { title, summary ->
+                                recordingViewModel.update제목AndSummary(
                                     recording.filename,
                                     title,
                                     summary
@@ -257,29 +257,29 @@ private fun RecordingSwipeToDeleteCard(
     onPlay: () -> Unit,
     onLongClick: () -> Unit,
     onDelete: () -> Unit,
-    onEditSave: (title: String, shortSummary: String) -> Unit
+    on편집저장: (title: String, shortSummary: String) -> Unit
 ) {
-    var showEditDialog by remember { mutableStateOf(false) }
-    var editTitle by remember(recording.filename) { mutableStateOf(recording.title) }
+    var show편집Dialog by remember { mutableStateOf(false) }
+    var edit제목 by remember(recording.filename) { mutableStateOf(recording.title) }
     var editShortSummary by remember(recording.filename) { mutableStateOf(recording.shortSummary) }
 
-    if (showEditDialog) {
+    if (show편집Dialog) {
         AlertDialog(
-            onDismissRequest = { showEditDialog = false },
-            title = { Text("Edit") },
+            onDismissRequest = { show편집Dialog = false },
+            title = { Text("편집") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
-                        value = editTitle,
-                        onValueChange = { editTitle = it },
-                        label = { Text("Title") },
+                        value = edit제목,
+                        onValueChange = { edit제목 = it },
+                        label = { Text("제목") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = editShortSummary,
                         onValueChange = { editShortSummary = it },
-                        label = { Text("One-line summary") },
+                        label = { Text("한 줄 요약") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -287,12 +287,12 @@ private fun RecordingSwipeToDeleteCard(
             },
             confirmButton = {
                 Button(onClick = {
-                    onEditSave(editTitle, editShortSummary)
-                    showEditDialog = false
-                }) { Text("Save") }
+                    on편집저장(edit제목, editShortSummary)
+                    show편집Dialog = false
+                }) { Text("저장") }
             },
             dismissButton = {
-                TextButton(onClick = { showEditDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { show편집Dialog = false }) { Text("취소") }
             }
         )
     }
@@ -304,11 +304,11 @@ private fun RecordingSwipeToDeleteCard(
             isSelectionMode = isSelectionMode,
             onPlay = onPlay,
             onLongClick = onLongClick,
-            onEdit = { showEditDialog = true }
+            on편집 = { show편집Dialog = true }
         )
     } else {
         SwipeToDeleteCard(
-            confirmTitle = "Delete recording?",
+            confirm제목 = "녹음을 삭제할까요?",
             confirmText = "This will permanently remove the recording and all its AI-generated analysis data.",
             onDelete = onDelete
         ) {
@@ -318,7 +318,7 @@ private fun RecordingSwipeToDeleteCard(
                 isSelectionMode = isSelectionMode,
                 onPlay = onPlay,
                 onLongClick = onLongClick,
-                onEdit = { showEditDialog = true }
+                on편집 = { show편집Dialog = true }
             )
         }
     }
@@ -332,7 +332,7 @@ private fun RecordingItem(
     isSelectionMode: Boolean = false,
     onPlay: () -> Unit,
     onLongClick: () -> Unit = {},
-    onEdit: (() -> Unit)? = null
+    on편집: (() -> Unit)? = null
 ) {
     Card(
         modifier = Modifier
@@ -354,16 +354,16 @@ private fun RecordingItem(
                     onCheckedChange = { onPlay() },
                     modifier = Modifier
                         .padding(end = 8.dp)
-                        .semantics { contentDescription = "Select item" }
+                        .semantics { contentDescription = "항목 선택" }
                 )
             }
 
             Column(modifier = Modifier.weight(1f)) {
-                val displayTitle = recording.title.ifBlank {
+                val display제목 = recording.title.ifBlank {
                     DateUtils.parseDateFromFilename(recording.filename)
                 }
                 Text(
-                    text = displayTitle,
+                    text = display제목,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -389,9 +389,9 @@ private fun RecordingItem(
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))
-                if (DateUtils.isConversationNote(recording.filename)) {
+                if (DateUtils.is대화Note(recording.filename)) {
                     Text(
-                        text = "Conversation",
+                        text = "대화",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold
@@ -419,11 +419,11 @@ private fun RecordingItem(
             }
 
             if (!isSelectionMode) {
-                if (onEdit != null) {
-                    IconButton(onClick = onEdit) {
+                if (on편집 != null) {
+                    IconButton(onClick = on편집) {
                         Icon(
-                            Icons.Default.Edit,
-                            contentDescription = "Edit title and summary",
+                            Icons.Default.편집,
+                            contentDescription = "편집 title and summary",
                             modifier = Modifier.size(18.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -432,7 +432,7 @@ private fun RecordingItem(
                 IconButton(onClick = onPlay) {
                     Icon(
                         Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = "Open note",
+                        contentDescription = "노트 열기",
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(32.dp)
                     )

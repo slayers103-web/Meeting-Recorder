@@ -4,10 +4,10 @@ package com.daedalusapps.echo.ui.screens
 data class LookbackOption(val hours: Long, val label: String)
 
 val LOOKBACK_OPTIONS = listOf(
-    LookbackOption(24L, "Last 24 hours"),
-    LookbackOption(72L, "Last 3 days"),
-    LookbackOption(168L, "Last week"),
-    LookbackOption(-1L, "All recordings")
+    LookbackOption(24L, "최근 24시간"),
+    LookbackOption(72L, "최근 3일"),
+    LookbackOption(168L, "지난 1주"),
+    LookbackOption(-1L, "모든 녹음")
 )
 
 const val TODO_LOOKBACK_HOURS_KEY = "todo_lookback_hours"

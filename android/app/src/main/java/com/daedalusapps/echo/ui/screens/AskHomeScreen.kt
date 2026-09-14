@@ -29,14 +29,14 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.BluetoothConnected
-import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Content복사
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.일시정지
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.공유
+import androidx.compose.material.icons.filled.정지
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -80,7 +80,7 @@ import com.daedalusapps.echo.viewmodel.RecordingViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AskHomeScreen(
+fun 질문HomeScreen(
     recordingViewModel: RecordingViewModel,
     onNavigateToNote: (String) -> Unit,
     onNavigateToRecordings: () -> Unit,
@@ -94,10 +94,10 @@ fun AskHomeScreen(
 
     // Local Recording State
     val isRecording by recordingViewModel.isRecording.collectAsState()
-    val isPaused by recordingViewModel.isPaused.collectAsState()
+    val is일시정지d by recordingViewModel.is일시정지d.collectAsState()
     val recordingDurationSeconds by recordingViewModel.recordingDurationSeconds.collectAsState()
     val useBluetoothMic by recordingViewModel.useBluetoothMic.collectAsState()
-    val autoStopNotice by recordingViewModel.autoStopNotice.collectAsState()
+    val auto정지Notice by recordingViewModel.auto정지Notice.collectAsState()
     val snackbar = remember { SnackbarHostState() }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -128,9 +128,9 @@ fun AskHomeScreen(
     }
 
     val libraryAnswer by recordingViewModel.libraryAnswer.collectAsState()
-    val librarySources by recordingViewModel.librarySources.collectAsState()
+    val library출처 by recordingViewModel.library출처.collectAsState()
     val libraryQuestion by recordingViewModel.libraryQuestion.collectAsState()
-    val isAsking by recordingViewModel.isAsking.collectAsState()
+    val is질문ing by recordingViewModel.is질문ing.collectAsState()
     val aiError by recordingViewModel.aiError.collectAsState()
     val graph by recordingViewModel.globalGraph.collectAsState()
     val exportIntent by recordingViewModel.exportIntent.collectAsState()
@@ -145,10 +145,10 @@ fun AskHomeScreen(
         }
     }
 
-    LaunchedEffect(autoStopNotice) {
-        autoStopNotice?.let {
+    LaunchedEffect(auto정지Notice) {
+        auto정지Notice?.let {
             snackbar.showSnackbar(it)
-            recordingViewModel.clearAutoStopNotice()
+            recordingViewModel.clearAuto정지Notice()
         }
     }
 
@@ -193,24 +193,24 @@ fun AskHomeScreen(
                 OutlinedTextField(
                     value = question,
                     onValueChange = { question = it },
-                    placeholder = { Text("Ask anything across all your notes…") },
+                    placeholder = { Text("질문 anything across all your notes…") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
                     maxLines = 4
                 )
                 Button(
                     onClick = { if (question.isNotBlank()) recordingViewModel.askLibraryQuestion(question) },
-                    enabled = question.isNotBlank() && !isAsking,
+                    enabled = question.isNotBlank() && !is질문ing,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    if (isAsking) {
+                    if (is질문ing) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
                     }
-                    Text(if (isAsking) "Searching notes…" else "Ask")
+                    Text(if (is질문ing) "노트 검색 중…" else "질문")
                 }
 
-                if (aiError != null && !isAsking) {
+                if (aiError != null && !is질문ing) {
                     Text(
                         text = aiError!!,
                         style = MaterialTheme.typography.bodySmall,
@@ -227,9 +227,9 @@ fun AskHomeScreen(
                                 .verticalScroll(rememberScrollState())
                                 .padding(12.dp)
                         ) {
-                            AskAnswerContent(
+                            질문AnswerContent(
                                 answer = libraryAnswer!!,
-                                sources = librarySources,
+                                sources = library출처,
                                 onNavigateToNote = onNavigateToNote
                             )
                         }
@@ -240,18 +240,18 @@ fun AskHomeScreen(
                             horizontalArrangement = Arrangement.End
                         ) {
                             TextButton(onClick = {
-                                val text = MarkdownExporter.exportQa(libraryQuestion, libraryAnswer!!, librarySources)
+                                val text = MarkdownExporter.exportQa(libraryQuestion, libraryAnswer!!, library출처)
                                 clipboard.setText(AnnotatedString(text))
                                 Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
                             }) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Content복사, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Copy")
+                                Text("복사")
                             }
                             TextButton(onClick = { recordingViewModel.exportLibraryAnswer() }) {
-                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.공유, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Share")
+                                Text("공유")
                             }
                         }
                     }
@@ -262,7 +262,7 @@ fun AskHomeScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Knowledge Graph",
+                        text = "지식 그래프",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold,
@@ -314,7 +314,7 @@ fun AskHomeScreen(
                                 modifier = Modifier
                                     .size(10.dp)
                                     .clip(CircleShape)
-                                    .background(if (isPaused) Color.Gray else Color.Red)
+                                    .background(if (is일시정지d) Color.Gray else Color.Red)
                             )
                             
                             // Elapsed duration text
@@ -329,30 +329,30 @@ fun AskHomeScreen(
                             IconButton(onClick = toggleBluetoothMic) {
                                 Icon(
                                     imageVector = if (useBluetoothMic) Icons.Default.BluetoothConnected else Icons.Default.Bluetooth,
-                                    contentDescription = "Bluetooth Microphone",
+                                    contentDescription = "블루투스 마이크",
                                     tint = if (useBluetoothMic) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
 
-                            // Pause/Resume button
+                            // 일시정지/재개 button
                             IconButton(onClick = {
-                                if (isPaused) recordingViewModel.resumeLocalRecording()
+                                if (is일시정지d) recordingViewModel.resumeLocalRecording()
                                 else recordingViewModel.pauseLocalRecording()
                             }) {
                                 Icon(
-                                    imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                                    contentDescription = if (isPaused) "Resume" else "Pause"
+                                    imageVector = if (is일시정지d) Icons.Default.PlayArrow else Icons.Default.일시정지,
+                                    contentDescription = if (is일시정지d) "재개" else "일시정지"
                                 )
                             }
 
-                            // Stop button
+                            // 정지 button
                             Button(
                                 onClick = { recordingViewModel.stopLocalRecording() },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color.Red, contentColor = Color.White)
                             ) {
-                                Icon(Icons.Default.Stop, contentDescription = "Stop recording", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.정지, contentDescription = "정지 recording", modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Stop")
+                                Text("정지")
                             }
                         }
                     }
@@ -382,7 +382,7 @@ fun AskHomeScreen(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Text(
-                                    text = "BT Mic",
+                                    text = "블루투스 마이크",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = if (useBluetoothMic) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                 )
@@ -404,7 +404,7 @@ fun AskHomeScreen(
 }
 
 @Composable
-private fun AskAnswerContent(
+private fun 질문AnswerContent(
     answer: String,
     sources: List<Recording>,
     onNavigateToNote: (String) -> Unit
@@ -418,7 +418,7 @@ private fun AskAnswerContent(
         HorizontalDivider()
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "Sources",
+            text = "출처",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.SemiBold
@@ -448,7 +448,7 @@ private fun AskAnswerContent(
                 }
                 Icon(
                     Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = "Open note",
+                    contentDescription = "노트 열기",
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp)
                 )

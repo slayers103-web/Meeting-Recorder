@@ -13,9 +13,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Arrow뒤로
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.삭제
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -56,12 +56,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.size
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.재생Arrow
+import androidx.compose.material.icons.filled.정지
 import androidx.compose.material3.Slider
 import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.common.재생er
+import androidx.media3.exoplayer.Exo재생er
 import android.net.Uri
 import android.util.Log
 import androidx.compose.runtime.DisposableEffect
@@ -69,7 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import java.io.File
 import kotlinx.coroutines.delay
-import com.daedalusapps.echo.ai.TranscriptFormatter
+import com.daedalusapps.echo.ai.음성 기록Formatter
 import com.daedalusapps.echo.ui.mindmap.MindMapCanvas
 import com.daedalusapps.echo.viewmodel.RecordingViewModel
 
@@ -78,12 +78,12 @@ import com.daedalusapps.echo.viewmodel.RecordingViewModel
 fun NoteDetailScreen(
     filename: String,
     recordingViewModel: RecordingViewModel,
-    onBack: () -> Unit
+    on뒤로: () -> Unit
 ) {
     val context = LocalContext.current
     val note by recordingViewModel.currentNote.collectAsState()
     val isProcessing by recordingViewModel.isProcessing.collectAsState()
-    val isAsking by recordingViewModel.isAsking.collectAsState()
+    val is질문ing by recordingViewModel.is질문ing.collectAsState()
     val syncProgress by recordingViewModel.syncProgress.collectAsState()
     val aiError by recordingViewModel.aiError.collectAsState()
     val askAnswer by recordingViewModel.askAnswer.collectAsState()
@@ -102,18 +102,18 @@ fun NoteDetailScreen(
         }
     }
 
-    // Player setup
-    val player = remember { ExoPlayer.Builder(context).build() }
-    var isPlaying by remember { mutableStateOf(false) }
+    // 재생er setup
+    val player = remember { Exo재생er.Builder(context).build() }
+    var is재생ing by remember { mutableStateOf(false) }
     var playbackPosition by remember { mutableLongStateOf(0L) }
     var playbackDuration by remember { mutableLongStateOf(0L) }
 
-    // Sync isPlaying when audio finishes naturally
+    // Sync is재생ing when audio finishes naturally
     DisposableEffect(player) {
-        val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED || playbackState == Player.STATE_IDLE) {
-                    isPlaying = false
+        val listener = object : 재생er.Listener {
+            override fun on재생backStateChanged(playbackState: Int) {
+                if (playbackState == 재생er.STATE_ENDED || playbackState == 재생er.STATE_IDLE) {
+                    is재생ing = false
                     playbackPosition = 0L
                 }
             }
@@ -126,8 +126,8 @@ fun NoteDetailScreen(
     }
 
     // Poll position while playing
-    LaunchedEffect(isPlaying) {
-        while (isPlaying) {
+    LaunchedEffect(is재생ing) {
+        while (is재생ing) {
             playbackPosition = player.currentPosition.coerceAtLeast(0L)
             playbackDuration = player.duration.takeIf { it > 0L } ?: (note?.durationMillis ?: 0L)
             delay(200)
@@ -144,27 +144,27 @@ fun NoteDetailScreen(
     }
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    var showDeleteDialog by remember { mutableStateOf(false) }
+    var show삭제Dialog by remember { mutableStateOf(false) }
     var showInNoteSearch by remember { mutableStateOf(false) }
     var inNoteQuery by remember { mutableStateOf("") }
     var showOverflowMenu by remember { mutableStateOf(false) }
 
-    if (showDeleteDialog) {
+    if (show삭제Dialog) {
         AlertDialog(
-            onDismissRequest = { showDeleteDialog = false },
-            title = { Text("Delete recording?") },
-            text = { Text("This will permanently remove the recording and all its AI-generated analysis data.") },
+            onDismissRequest = { show삭제Dialog = false },
+            title = { Text("녹음을 삭제할까요?") },
+            text = { Text("녹음 파일과 AI가 생성한 모든 분석 데이터가 영구적으로 삭제됩니다.") },
             confirmButton = {
                 Button(
                     onClick = {
-                        showDeleteDialog = false
+                        show삭제Dialog = false
                         recordingViewModel.deleteRecording(filename)
-                        onBack()
+                        on뒤로()
                     }
-                ) { Text("Delete") }
+                ) { Text("삭제") }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { show삭제Dialog = false }) { Text("취소") }
             }
         )
     }
@@ -185,20 +185,20 @@ fun NoteDetailScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    IconButton(onClick = on뒤로) {
+                        Icon(Icons.AutoMirrored.Filled.Arrow뒤로, contentDescription = "뒤로")
                     }
                 },
                 actions = {
                     IconButton(onClick = { showInNoteSearch = !showInNoteSearch; if (!showInNoteSearch) inNoteQuery = "" }) {
-                        Icon(Icons.Default.Search, contentDescription = "Search in note")
+                        Icon(Icons.Default.Search, contentDescription = "노트에서 검색")
                     }
-                    IconButton(onClick = { showDeleteDialog = true }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete")
+                    IconButton(onClick = { show삭제Dialog = true }) {
+                        Icon(Icons.Default.삭제, contentDescription = "삭제")
                     }
                     Box {
                         IconButton(onClick = { showOverflowMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                            Icon(Icons.Default.MoreVert, contentDescription = "추가 옵션")
                         }
                         DropdownMenu(
                             expanded = showOverflowMenu,
@@ -209,7 +209,7 @@ fun NoteDetailScreen(
                                     ?: File(context.getExternalFilesDir(null), "Recordings/$filename")).exists()
                             }
                             DropdownMenuItem(
-                                text = { Text("Export audio") },
+                                text = { Text("오디오 내보내기") },
                                 onClick = {
                                     showOverflowMenu = false
                                     recordingViewModel.exportAudio(filename)
@@ -217,7 +217,7 @@ fun NoteDetailScreen(
                                 enabled = audioExists && !isProcessing
                             )
                             DropdownMenuItem(
-                                text = { Text("Export markdown") },
+                                text = { Text("마크다운 내보내기") },
                                 onClick = {
                                     showOverflowMenu = false
                                     recordingViewModel.exportMarkdown(filename)
@@ -248,7 +248,7 @@ fun NoteDetailScreen(
                 if (isProcessing) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
-                // Playback progress bar
+                // 재생back progress bar
                 val totalDuration = playbackDuration.takeIf { it > 0L } ?: (note?.durationMillis ?: 0L)
                 if (totalDuration > 0L) {
                     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
@@ -285,12 +285,12 @@ fun NoteDetailScreen(
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // Play / Stop Button
+                    // 재생 / 정지 Button
                     Button(
                         onClick = {
-                            if (isPlaying) {
+                            if (is재생ing) {
                                 player.stop()
-                                isPlaying = false
+                                is재생ing = false
                                 playbackPosition = 0L
                             } else {
                                 val file = note?.localPath?.takeIf { it.isNotBlank() }?.let { File(it) }
@@ -300,21 +300,21 @@ fun NoteDetailScreen(
                                     player.prepare()
                                     player.play()
                                     playbackDuration = note?.durationMillis ?: 0L
-                                    isPlaying = true
+                                    is재생ing = true
                                 } else {
-                                    Log.e("Playback", "File not found: ${file.absolutePath}")
+                                    Log.e("재생back", "File not found: ${file.absolutePath}")
                                 }
                             }
                         },
                         modifier = Modifier.weight(1f)
                     ) {
                         Icon(
-                            if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                            if (is재생ing) Icons.Default.정지 else Icons.Default.재생Arrow,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(Modifier.width(4.dp))
-                        Text(if (isPlaying) "Stop" else "Play", maxLines = 1)
+                        Text(if (is재생ing) "정지" else "재생", maxLines = 1)
                     }
 
                     Button(
@@ -322,14 +322,14 @@ fun NoteDetailScreen(
                         enabled = !isProcessing,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Analyze")
+                        Text("분석")
                     }
                     OutlinedButton(
                         onClick = { recordingViewModel.exportMarkdown(filename) },
                         enabled = transcript.isNotEmpty() && !isProcessing,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Export MD")
+                        Text("MD 내보내기")
                     }
                 }
             }
@@ -343,12 +343,12 @@ fun NoteDetailScreen(
 
 
             TabRow(selectedTabIndex = selectedTab) {
-                listOf("Transcript", "Summary", "Mind Map", "Ask").forEachIndexed { index, title ->
+                listOf("음성 기록", "요약", "마인드맵", "질문").forEachIndexed { index, title ->
                     Tab(
                         selected = selectedTab == index,
                         onClick = {
                             selectedTab = index
-                            if (index != 3) recordingViewModel.clearAskAnswer()
+                            if (index != 3) recordingViewModel.clear질문Answer()
                         },
                         text = { Text(title) }
                     )
@@ -359,7 +359,7 @@ fun NoteDetailScreen(
                 OutlinedTextField(
                     value = inNoteQuery,
                     onValueChange = { inNoteQuery = it },
-                    placeholder = { Text("Find in note…") },
+                    placeholder = { Text("노트에서 찾기…") },
                     leadingIcon = { Icon(Icons.Default.Search, null) },
                     trailingIcon = {
                         if (inNoteQuery.isNotEmpty()) {
@@ -379,13 +379,13 @@ fun NoteDetailScreen(
                     .padding(16.dp)
             ) {
                 when (selectedTab) {
-                    0 -> TranscriptTab(transcript, inNoteQuery)
-                    1 -> SummaryTab(summary, inNoteQuery)
+                    0 -> 음성 기록Tab(transcript, inNoteQuery)
+                    1 -> 요약Tab(summary, inNoteQuery)
                     2 -> MindMapTab(mindMap)
-                    3 -> AskTab(
+                    3 -> 질문Tab(
                         answer = askAnswer,
-                        isAsking = isAsking,
-                        onAsk = { q -> recordingViewModel.askNoteQuestion(filename, q) }
+                        is질문ing = is질문ing,
+                        on질문 = { q -> recordingViewModel.askNoteQuestion(filename, q) }
                     )
                 }
             }
@@ -394,11 +394,11 @@ fun NoteDetailScreen(
 }
 
 @Composable
-private fun TranscriptTab(transcript: String, query: String) {
+private fun 음성 기록Tab(transcript: String, query: String) {
     if (transcript.isEmpty()) {
-        PlaceholderText("Tap 'Analyze' to transcribe this recording.")
+        PlaceholderText("Tap '분석' to transcribe this recording.")
     } else {
-        val formatted = remember(transcript) { TranscriptFormatter.formatParagraphs(transcript) }
+        val formatted = remember(transcript) { 음성 기록Formatter.formatParagraphs(transcript) }
         val highlightedText = remember(formatted, query) { highlightMatches(formatted, query) }
         Column(
             modifier = Modifier
@@ -414,9 +414,9 @@ private fun TranscriptTab(transcript: String, query: String) {
 }
 
 @Composable
-private fun SummaryTab(summary: String, query: String) {
+private fun 요약Tab(summary: String, query: String) {
     if (summary.isEmpty()) {
-        PlaceholderText("No summary yet. Tap 'Analyze' to generate one.")
+        PlaceholderText("No summary yet. Tap '분석' to generate one.")
     } else {
         Column(
             modifier = Modifier
@@ -424,7 +424,7 @@ private fun SummaryTab(summary: String, query: String) {
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            val sections = parseSummarySections(summary)
+            val sections = parse요약Sections(summary)
             if (sections.isEmpty()) {
                 Text(highlightMatches(summary, query), style = MaterialTheme.typography.bodyMedium)
             } else {
@@ -445,7 +445,7 @@ private fun SummaryTab(summary: String, query: String) {
 @Composable
 private fun MindMapTab(mindMap: String) {
     if (mindMap.isEmpty()) {
-        PlaceholderText("No mind map yet. Tap 'Analyze' to generate one.")
+        PlaceholderText("No mind map yet. Tap '분석' to generate one.")
     } else {
         MindMapCanvas(markdown = mindMap)
     }
@@ -467,10 +467,10 @@ private fun PlaceholderText(message: String) {
 
 
 @Composable
-private fun AskTab(
+private fun 질문Tab(
     answer: String?,
-    isAsking: Boolean,
-    onAsk: (String) -> Unit
+    is질문ing: Boolean,
+    on질문: (String) -> Unit
 ) {
     var question by remember { mutableStateOf("") }
     Column(
@@ -483,28 +483,28 @@ private fun AskTab(
         OutlinedTextField(
             value = question,
             onValueChange = { question = it },
-            placeholder = { Text("Ask a question about this note…") },
+            placeholder = { Text("질문 a question about this note…") },
             modifier = Modifier.fillMaxWidth(),
             minLines = 2,
             maxLines = 4
         )
         Button(
-            onClick = { if (question.isNotBlank()) onAsk(question) },
-            enabled = question.isNotBlank() && !isAsking,
+            onClick = { if (question.isNotBlank()) on질문(question) },
+            enabled = question.isNotBlank() && !is질문ing,
             modifier = Modifier.fillMaxWidth()
         ) {
-            if (isAsking) {
+            if (is질문ing) {
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
             }
-            Text(if (isAsking) "Thinking…" else "Ask")
+            Text(if (is질문ing) "Thinking…" else "질문")
         }
         if (answer != null) {
             Text(
                 text = answer,
                 style = MaterialTheme.typography.bodyMedium
             )
-        } else if (!isAsking) {
+        } else if (!is질문ing) {
             Text(
                 text = "Answers come from the note's summary.",
                 style = MaterialTheme.typography.bodySmall,
@@ -518,7 +518,7 @@ private fun AskTab(
  * Turns a JSON summary blob into readable (header, text) pairs.
  * Falls back to empty list if the input isn't JSON-like.
  */
-private fun parseSummarySections(raw: String): List<Pair<String, String>> {
+private fun parse요약Sections(raw: String): List<Pair<String, String>> {
     val trimmed = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
     if (!trimmed.startsWith("{")) return emptyList()
     return try {

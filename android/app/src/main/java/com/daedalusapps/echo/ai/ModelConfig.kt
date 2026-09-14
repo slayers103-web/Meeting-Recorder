@@ -16,14 +16,14 @@ data class LocalModel(
 val GEMMA3_1B = LocalModel(
     id          = "gemma3_1b",
     displayName = "Gemma 3 1B",
-    description = "~555 MB · Newer architecture · Better instruction following",
+    description = "약 555 MB · 최신 아키텍처 · 한국어 지시 이해 및 요약",
     downloadUrl = "https://huggingface.co/t-ghosh/gemma-tflite/resolve/main/gemma3-1B-it-int4.task",
     filename    = "gemma3-1B-it-int4.task",
     sizeBytes   = 555_000_000L,
     useGpu      = false
 )
 
-// Whisper base.en (sherpa-onnx int8 quantized) — downloaded as individual files
+// Whisper Base 다국어 모델 (sherpa-onnx int8 양자화) — 개별 파일 다운로드
 const val WHISPER_ENCODER_FILE = "base-encoder.int8.onnx"
 const val WHISPER_DECODER_FILE = "base-decoder.int8.onnx"
 const val WHISPER_TOKENS_FILE  = "base-tokens.txt"

@@ -45,10 +45,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private val BACKUP_INTERVAL_OPTIONS = listOf(
-    12L to "Every 12 hours",
-    24L to "Daily",
-    72L to "Every 3 days",
-    168L to "Weekly"
+    12L to "12시간마다",
+    24L to "매일",
+    72L to "3일마다",
+    168L to "매주"
 )
 
 private fun backupIntervalLabel(hours: Long): String =
@@ -58,34 +58,34 @@ private fun todoLookbackLabel(hours: Long): String =
     LOOKBACK_OPTIONS.firstOrNull { it.hours == hours }?.label ?: "Last $hours hours"
 
 private val MAX_RECORDING_DURATION_OPTIONS = listOf(
-    30 to "30 minutes",
-    60 to "1 hour",
-    120 to "2 hours",
-    240 to "4 hours",
-    MAX_RECORDING_MINUTES_UNLIMITED to "Unlimited"
+    30 to "30분",
+    60 to "1시간",
+    120 to "2시간",
+    240 to "4시간",
+    MAX_RECORDING_MINUTES_UNLIMITED to "무제한"
 )
 
 private fun maxRecordingDurationLabel(minutes: Int): String =
     MAX_RECORDING_DURATION_OPTIONS.firstOrNull { it.first == minutes }?.second ?: "$minutes minutes"
 
 private val AI_TEXT_BUDGET_OPTIONS = listOf(
-    6_000 to "6,000 characters",
-    9_000 to "9,000 characters",
-    12_000 to "12,000 characters",
-    16_000 to "16,000 characters"
+    6_000 to "6,000자",
+    9_000 to "9,000자",
+    12_000 to "12,000자",
+    16_000 to "16,000자"
 )
 
 private fun aiTextBudgetLabel(chars: Int): String =
     AI_TEXT_BUDGET_OPTIONS.firstOrNull { it.first == chars }?.second ?: "$chars characters"
 
 private fun formatLastBackupTime(millis: Long): String {
-    if (millis <= 0L) return "never"
+    if (millis <= 0L) return "없음"
     return java.text.SimpleDateFormat("MMM d, yyyy h:mm a", java.util.Locale.getDefault()).format(java.util.Date(millis))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(
+fun 설정Screen(
     recordingViewModel: RecordingViewModel,
     onBack: () -> Unit,
     onNavigateToPromptEditor: () -> Unit = {}
@@ -133,7 +133,7 @@ fun SettingsScreen(
         if (useBluetoothMic) {
             recordingViewModel.setUseBluetoothMic(false)
         } else {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            if (android.os.빌드.VERSION.SDK_INT >= android.os.빌드.VERSION_CODES.S) {
                 val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
                     context,
                     android.Manifest.permission.BLUETOOTH_CONNECT
@@ -158,7 +158,7 @@ fun SettingsScreen(
         LocalModel(
             id = "use_lite",
             displayName = "Universal Sentence Encoder Lite",
-            description = "~26 MB · Semantic note search · On-device",
+            description = "약 26 MB · 의미 기반 노트 검색 · 기기 내 처리",
             downloadUrl = EMBEDDING_MODEL_URL,
             filename = EMBEDDING_MODEL_FILE,
             sizeBytes = EMBEDDING_MODEL_SIZE_BYTES
@@ -218,7 +218,7 @@ fun SettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
+                title = { Text("설정") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
@@ -248,44 +248,44 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(24.dp)
             ) {
                 // AI model — single active model, no picker needed
-                Text("AI Summarization Engine", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("AI 요약 엔진", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(GEMMA3_1B.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                         Text(GEMMA3_1B.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Active", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                        Text("사용 중", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }
 
                 // STT — Whisper only
-                Text("Speech-to-Text Engine", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("음성-텍스트 변환 엔진", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Card(colors = CardDefaults.cardColors(
                     containerColor = if (whisperReady) MaterialTheme.colorScheme.primaryContainer
                                      else MaterialTheme.colorScheme.surfaceVariant
                 )) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Whisper base.en", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                        Text("~160 MB · High accuracy · On-device", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Whisper Base (한국어)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        Text("약 160 MB · 높은 정확도 · 기기 내 처리", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         when {
-                            whisperReady -> Text("Active", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            whisperReady -> Text("사용 중", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                             whisperState is DownloadState.Downloading -> {
                                 val dl = whisperState as DownloadState.Downloading
                                 LinearProgressIndicator(progress = { dl.progressPct / 100f }, modifier = Modifier.fillMaxWidth())
-                                Text("Downloading… ${dl.progressPct}%  ·  ${dl.bytesDownloaded / 1_048_576} / ${WHISPER_TOTAL_BYTES / 1_048_576} MB", style = MaterialTheme.typography.bodySmall)
+                                Text("다운로드 중… ${dl.progressPct}%  ·  ${dl.bytesDownloaded / 1_048_576} / ${WHISPER_TOTAL_BYTES / 1_048_576} MB", style = MaterialTheme.typography.bodySmall)
                             }
                             whisperState is DownloadState.Failed -> {
-                                Text("Error: ${(whisperState as DownloadState.Failed).message}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                                OutlinedButton(onClick = { scope.launch { whisperDownloader.download() } }, modifier = Modifier.fillMaxWidth()) { Text("Retry") }
+                                Text("오류: ${(whisperState as DownloadState.Failed).message}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                OutlinedButton(onClick = { scope.launch { whisperDownloader.download() } }, modifier = Modifier.fillMaxWidth()) { Text("재시도") }
                             }
                             else -> Button(onClick = { scope.launch { whisperDownloader.download() } }, modifier = Modifier.fillMaxWidth()) {
-                                Text("Download (~160 MB)")
+                                Text("다운로드 (약 160 MB)")
                             }
                         }
                     }
                 }
 
                 // Embedding model (for semantic Ask Library)
-                Text("Semantic Search Engine", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("의미 기반 검색 엔진", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Card(colors = CardDefaults.cardColors(
                     containerColor = if (embeddingReady) MaterialTheme.colorScheme.primaryContainer
                                      else MaterialTheme.colorScheme.surfaceVariant
@@ -294,31 +294,31 @@ fun SettingsScreen(
                         Text(embeddingModel.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                         Text(embeddingModel.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         when {
-                            embeddingReady -> Text("Active — Ask Library enabled", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            embeddingReady -> Text("사용 중 — Ask Library enabled", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                             embeddingState is DownloadState.Downloading -> {
                                 val dl = embeddingState as DownloadState.Downloading
                                 LinearProgressIndicator(progress = { dl.progressPct / 100f }, modifier = Modifier.fillMaxWidth())
-                                Text("Downloading… ${dl.progressPct}%  ·  ${dl.bytesDownloaded / 1_048_576} / ${EMBEDDING_MODEL_SIZE_BYTES / 1_048_576} MB", style = MaterialTheme.typography.bodySmall)
+                                Text("다운로드 중… ${dl.progressPct}%  ·  ${dl.bytesDownloaded / 1_048_576} / ${EMBEDDING_MODEL_SIZE_BYTES / 1_048_576} MB", style = MaterialTheme.typography.bodySmall)
                             }
                             embeddingState is DownloadState.Failed -> {
-                                Text("Error: ${(embeddingState as DownloadState.Failed).message}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                                OutlinedButton(onClick = { scope.launch { embeddingDownloader.download(embeddingModel) } }, modifier = Modifier.fillMaxWidth()) { Text("Retry") }
+                                Text("오류: ${(embeddingState as DownloadState.Failed).message}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                OutlinedButton(onClick = { scope.launch { embeddingDownloader.download(embeddingModel) } }, modifier = Modifier.fillMaxWidth()) { Text("재시도") }
                             }
                             else -> Button(onClick = { scope.launch { embeddingDownloader.download(embeddingModel) } }, modifier = Modifier.fillMaxWidth()) {
-                                Text("Download (~26 MB)")
+                                Text("다운로드 (약 26 MB)")
                             }
                         }
                     }
                 }
 
-                // Management
-                Text("Management", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                // 관리
+                Text("관리", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Analysis Prompt", style = MaterialTheme.typography.bodyMedium)
-                    Text("The prompt sent to Gemma for every analysis. You can view and customize it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("분석 프롬프트", style = MaterialTheme.typography.bodyMedium)
+                    Text("모든 분석에 Gemma로 전달되는 프롬프트입니다. 확인하거나 직접 수정할 수 있습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedButton(onClick = onNavigateToPromptEditor, modifier = Modifier.fillMaxWidth()) {
-                        Text("Configure Prompt")
+                        Text("프롬프트 설정")
                     }
                 }
 
@@ -330,7 +330,7 @@ fun SettingsScreen(
                         readOnly = true,
                         value = aiTextBudgetLabel(aiTextBudgetChars),
                         onValueChange = {},
-                        label = { Text("AI processing text budget") },
+                        label = { Text("AI 처리 텍스트 분량") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = aiTextBudgetMenuExpanded) },
                         modifier = Modifier
                             .menuAnchor(MenuAnchorType.PrimaryNotEditable)
@@ -355,16 +355,16 @@ fun SettingsScreen(
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Auto-analyze on stop", style = MaterialTheme.typography.bodyMedium)
-                        Text("Analyze recordings automatically when you stop recording", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("녹음 종료 시 자동 분석", style = MaterialTheme.typography.bodyMedium)
+                        Text("녹음을 중지하면 자동으로 분석합니다", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(checked = autoProcess, onCheckedChange = { autoProcess = it })
                 }
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Bluetooth mic compatibility", style = MaterialTheme.typography.bodyMedium)
-                        Text("Record audio from connected Bluetooth headsets/microphones", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("블루투스 마이크 호환", style = MaterialTheme.typography.bodyMedium)
+                        Text("연결된 블루투스 헤드셋/마이크에서 음성을 녹음합니다", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(
                         checked = useBluetoothMic,
@@ -372,8 +372,8 @@ fun SettingsScreen(
                     )
                 }
 
-                // Local Recording
-                Text("Local Recording", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                // 로컬 녹음
+                Text("로컬 녹음", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 ExposedDropdownMenuBox(
                     expanded = maxRecordingMenuExpanded,
                     onExpandedChange = { maxRecordingMenuExpanded = it }
@@ -382,7 +382,7 @@ fun SettingsScreen(
                         readOnly = true,
                         value = maxRecordingDurationLabel(maxRecordingMinutes),
                         onValueChange = {},
-                        label = { Text("Max recording duration") },
+                        label = { Text("최대 녹음 시간") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = maxRecordingMenuExpanded) },
                         modifier = Modifier
                             .menuAnchor(MenuAnchorType.PrimaryNotEditable)
@@ -405,8 +405,8 @@ fun SettingsScreen(
                     }
                 }
 
-                // Todo List
-                Text("Todo List", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                // 할 일 목록
+                Text("할 일 목록", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 ExposedDropdownMenuBox(
                     expanded = todoLookbackMenuExpanded,
                     onExpandedChange = { todoLookbackMenuExpanded = it }
@@ -415,7 +415,7 @@ fun SettingsScreen(
                         readOnly = true,
                         value = todoLookbackLabel(todoLookbackHours),
                         onValueChange = {},
-                        label = { Text("Default AI lookback") },
+                        label = { Text("AI 기본 조회 범위") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = todoLookbackMenuExpanded) },
                         modifier = Modifier
                             .menuAnchor(MenuAnchorType.PrimaryNotEditable)
@@ -438,11 +438,11 @@ fun SettingsScreen(
                     }
                 }
 
-                // Backup & Recovery
-                Text("Backup & Recovery", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                // 백업 및 복원
+                Text("백업 및 복원", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
 
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Export or import transcripts and summary metadata as a single JSON file.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("음성 기록과 요약 정보를 하나의 JSON 파일로 내보내거나 가져옵니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -452,20 +452,20 @@ fun SettingsScreen(
                             onClick = { exportLauncher.launch("daedalus_backup.json") },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Export Backup")
+                            Text("백업 내보내기")
                         }
 
                         Button(
                             onClick = { importLauncher.launch(arrayOf("application/json")) },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Import Backup")
+                            Text("백업 가져오기")
                         }
                     }
 
                     HorizontalDivider()
 
-                    Text("Automatic Backups", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("자동 백업", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -473,15 +473,15 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Backup folder", style = MaterialTheme.typography.bodyMedium)
+                            Text("백업 폴더", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                backupFolderName ?: "Not set",
+                                backupFolderName ?: "설정되지 않음",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         OutlinedButton(onClick = { chooseBackupFolderLauncher.launch(null) }) {
-                            Text("Choose Backup Folder")
+                            Text("백업 폴더 선택")
                         }
                     }
 
@@ -493,7 +493,7 @@ fun SettingsScreen(
                             readOnly = true,
                             value = backupIntervalLabel(backupIntervalHours),
                             onValueChange = {},
-                            label = { Text("Backup interval (approximately)") },
+                            label = { Text("백업 간격 (대략)") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = backupIntervalMenuExpanded) },
                             modifier = Modifier
                                 .menuAnchor(MenuAnchorType.PrimaryNotEditable)
@@ -528,7 +528,7 @@ fun SettingsScreen(
                                 prefs.edit().putInt(BackupPrefs.MAX_COUNT, n).apply()
                             }
                         },
-                        label = { Text("Max backups to keep") },
+                        label = { Text("보관할 최대 백업 수") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -553,7 +553,7 @@ fun SettingsScreen(
                         enabled = backupFolderUri != null && !isBackingUp,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Back Up Now")
+                        Text("지금 백업")
                     }
 
                     Text(
@@ -570,8 +570,8 @@ fun SettingsScreen(
                     }
                 }
 
-                // Privacy & Support
-                Text("Privacy & Support", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                // 개인정보 및 지원
+                Text("개인정보 및 지원", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
@@ -583,19 +583,19 @@ fun SettingsScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "🔒 100% Private & Local-First",
+                            text = "🔒 100% 비공개 · 기기 내 우선 처리",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = "Daedalus Echo runs entirely on your device. Your voice recordings, transcripts, and AI summaries are processed locally and never leave your phone. No analytics, tracking, or cloud uploads.",
+                            text = "Daedalus Echo runs entirely on your device. Your voice recordings, transcripts, and AI summaries are processed locally and 없음 leave your phone. No analytics, tracking, or cloud uploads.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f))
                         Text(
-                            text = "Support Open Source",
+                            text = "오픈소스 지원",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -611,7 +611,7 @@ fun SettingsScreen(
                             },
                             modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
                         ) {
-                            Text("Sponsor Project")
+                            Text("프로젝트 후원")
                         }
                     }
                 }
@@ -621,24 +621,24 @@ fun SettingsScreen(
                 Button(
                     onClick = {
                         prefs.edit().putBoolean("auto_process", autoProcess).apply()
-                        scope.launch { snackbar.showSnackbar("Settings saved") }
+                        scope.launch { snackbar.showSnackbar("설정 saved") }
                         onBack()
                     },
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("Save Settings") }
+                ) { Text("Save 설정") }
 
                 val packageInfo = remember {
                     try { context.packageManager.getPackageInfo(context.packageName, 0) } catch (e: Exception) { null }
                 }
-                val versionName = packageInfo?.versionName ?: "Unknown"
+                val versionName = packageInfo?.versionName ?: "알 수 없음"
                 val versionCode = packageInfo?.let {
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) it.longVersionCode
+                    if (android.os.빌드.VERSION.SDK_INT >= android.os.빌드.VERSION_CODES.P) it.long버전Code
                     else @Suppress("DEPRECATION") it.versionCode.toLong()
                 } ?: 0L
 
                 Box(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.Center) {
                     Text(
-                        text = "Version $versionName (Build $versionCode)",
+                        text = "버전 $versionName (빌드 $versionCode)",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     )

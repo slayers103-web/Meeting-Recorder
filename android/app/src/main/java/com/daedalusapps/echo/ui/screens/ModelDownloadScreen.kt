@@ -32,7 +32,7 @@ fun ModelDownloadScreen(onReady: () -> Unit) {
 
     var downloadStep by remember { mutableStateOf(DownloadStep.IDLE) }
     var progressPct by remember { mutableIntStateOf(0) }
-    var statusText by remember { mutableStateOf("Ready to setup") }
+    var statusText by remember { mutableStateOf("설치 준비 완료") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     val areReady = remember { areAllModelsReady(context) }
@@ -65,7 +65,7 @@ fun ModelDownloadScreen(onReady: () -> Unit) {
                 withContext(Dispatchers.Main) {
                     downloadStep = DownloadStep.EMBEDDING
                     progressPct = 0
-                    statusText = "Downloading Embedding Model (1/3)…"
+                    statusText = "임베딩 모델 다운로드 중 (1/3)…"
                 }
                 val job = launch {
                     embeddingDownloader.state.collect { state ->
@@ -103,7 +103,7 @@ fun ModelDownloadScreen(onReady: () -> Unit) {
                 withContext(Dispatchers.Main) {
                     downloadStep = DownloadStep.WHISPER
                     progressPct = 0
-                    statusText = "Downloading Whisper Model (2/3)…"
+                    statusText = "Whisper 모델 다운로드 중 (2/3)…"
                 }
                 val job = launch {
                     whisperDownloader.state.collect { state ->
@@ -141,7 +141,7 @@ fun ModelDownloadScreen(onReady: () -> Unit) {
                 withContext(Dispatchers.Main) {
                     downloadStep = DownloadStep.GEMMA
                     progressPct = 0
-                    statusText = "Downloading Gemma 3 1B Model (3/3)…"
+                    statusText = "Gemma 3 1B 모델 다운로드 중 (3/3)…"
                 }
                 val job = launch {
                     gemmaDownloader.state.collect { state ->
@@ -197,7 +197,7 @@ fun ModelDownloadScreen(onReady: () -> Unit) {
     val packageInfo = remember {
         try { context.packageManager.getPackageInfo(context.packageName, 0) } catch (e: Exception) { null }
     }
-    val versionName = packageInfo?.versionName ?: "Unknown"
+    val versionName = packageInfo?.versionName ?: "알 수 없음"
     val versionCode = packageInfo?.let {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) it.longVersionCode
         else @Suppress("DEPRECATION") it.versionCode.toLong()
@@ -218,7 +218,7 @@ fun ModelDownloadScreen(onReady: () -> Unit) {
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "AI Voice Recorder Companion",
+                text = "AI 음성 녹음 및 회의록 도우미",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -229,7 +229,7 @@ fun ModelDownloadScreen(onReady: () -> Unit) {
                     Text("All AI models ready!", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(20.dp))
                     Button(onClick = onReady, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                        Text("Continue")
+                        Text("계속")
                     }
                 }
 
@@ -246,10 +246,10 @@ fun ModelDownloadScreen(onReady: () -> Unit) {
                 DownloadStep.FAILED -> {
                     Text("Download failed", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.height(8.dp))
-                    Text(errorMessage ?: "Unknown error", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                    Text(errorMessage ?: "알 수 없음 error", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                     Spacer(Modifier.height(20.dp))
                     Button(onClick = { scope.launch { performSequentialDownload() } }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                        Text("Retry Download")
+                        Text("다운로드 재시도")
                     }
                 }
 
@@ -271,7 +271,7 @@ fun ModelDownloadScreen(onReady: () -> Unit) {
                         onClick = { scope.launch { performSequentialDownload() } },
                         modifier = Modifier.fillMaxWidth().height(52.dp)
                     ) {
-                        Text("Download All Models (One-Click)")
+                        Text("모든 모델 다운로드 (한 번에)")
                     }
                 }
             }

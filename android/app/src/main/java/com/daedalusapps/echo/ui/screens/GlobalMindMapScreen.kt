@@ -53,7 +53,7 @@ fun GlobalMindMapScreen(
     if (showHelp) {
         AlertDialog(
             onDismissRequest = { showHelp = false },
-            title = { Text("Using the Knowledge Graph") },
+            title = { Text("지식 그래프 사용 방법") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
@@ -61,19 +61,19 @@ fun GlobalMindMapScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
                     
-                    Text("• Nodes", fontWeight = FontWeight.Bold)
+                    Text("• 노드", fontWeight = FontWeight.Bold)
                     Text(
                         "Large rectangles represent key Topics. Smaller rectangles represent your Recordings. Tap a recording to open it.",
                         style = MaterialTheme.typography.bodySmall
                     )
 
-                    Text("• Connections", fontWeight = FontWeight.Bold)
+                    Text("• 연결", fontWeight = FontWeight.Bold)
                     Text(
                         "Lines show which recordings share common topics. Clustered nodes indicate related themes across your library.",
                         style = MaterialTheme.typography.bodySmall
                     )
 
-                    Text("• Exploration", fontWeight = FontWeight.Bold)
+                    Text("• 탐색", fontWeight = FontWeight.Bold)
                     Text(
                         "Pinch to zoom in/out and drag to pan across your semantic landscape.",
                         style = MaterialTheme.typography.bodySmall
@@ -81,7 +81,7 @@ fun GlobalMindMapScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showHelp = false }) { Text("Got it") }
+                TextButton(onClick = { showHelp = false }) { Text("확인") }
             }
         )
     }
@@ -89,7 +89,7 @@ fun GlobalMindMapScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Global Knowledge Graph") },
+                title = { Text("전체 지식 그래프") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
@@ -97,7 +97,7 @@ fun GlobalMindMapScreen(
                 },
                 actions = {
                     IconButton(onClick = { showHelp = true }) {
-                        Icon(Icons.Default.Info, contentDescription = "How to use")
+                        Icon(Icons.Default.Info, contentDescription = "사용 방법")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -116,7 +116,7 @@ fun GlobalMindMapScreen(
         ) {
             if (graph.nodes.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No topics analyzed yet.", style = MaterialTheme.typography.titleMedium)
+                    Text("아직 분석된 주제가 없습니다.", style = MaterialTheme.typography.titleMedium)
                 }
             } else {
                 GlobalMindMapCanvas(graph, onNavigateToNote)
@@ -198,10 +198,10 @@ fun GlobalMindMapCanvas(
                 onDismissRequest = { selectedTopic = null },
                 title = { Text(topic.node.label) },
                 text = if (connectedRecordings.isNotEmpty()) {
-                    { Text("Connected recordings:\n" + connectedRecordings.joinToString("\n") { "• $it" }) }
+                    { Text("연결된 녹음:\n" + connectedRecordings.joinToString("\n") { "• $it" }) }
                 } else null,
                 confirmButton = {
-                    TextButton(onClick = { selectedTopic = null }) { Text("OK") }
+                    TextButton(onClick = { selectedTopic = null }) { Text("확인") }
                 }
             )
         }

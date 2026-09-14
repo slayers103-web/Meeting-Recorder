@@ -5,7 +5,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.삭제
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -28,10 +28,10 @@ import androidx.compose.ui.unit.dp
 /** Swipe-to-delete card wrapper: swipe end-to-start reveals a delete icon and prompts a confirm dialog. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SwipeToDeleteCard(
+fun SwipeTo삭제Card(
     confirmTitle: String,
     confirmText: String,
-    onDelete: () -> Unit,
+    on삭제: () -> Unit,
     content: @Composable RowScope.() -> Unit
 ) {
     var showConfirm by remember { mutableStateOf(false) }
@@ -51,10 +51,10 @@ fun SwipeToDeleteCard(
             title = { Text(confirmTitle) },
             text = { Text(confirmText) },
             confirmButton = {
-                Button(onClick = { showConfirm = false; onDelete() }) { Text("Delete") }
+                Button(onClick = { showConfirm = false; on삭제() }) { Text("삭제") }
             },
             dismissButton = {
-                TextButton(onClick = { showConfirm = false }) { Text("Cancel") }
+                TextButton(onClick = { showConfirm = false }) { Text("취소") }
             }
         )
     }
@@ -69,7 +69,7 @@ fun SwipeToDeleteCard(
                     .padding(horizontal = 8.dp),
                 contentAlignment = Alignment.CenterEnd
             ) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red)
+                Icon(Icons.Default.삭제, contentDescription = "삭제", tint = Color.Red)
             }
         },
         content = content

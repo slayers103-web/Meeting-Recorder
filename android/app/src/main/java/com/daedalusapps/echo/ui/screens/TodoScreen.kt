@@ -18,7 +18,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Arrow뒤로
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.AlertDialog
@@ -67,7 +67,7 @@ import com.daedalusapps.echo.viewmodel.TodoViewModel
 @Composable
 fun TodoScreen(
     todoViewModel: TodoViewModel,
-    onBack: () -> Unit
+    on뒤로: () -> Unit
 ) {
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -91,7 +91,7 @@ fun TodoScreen(
     LaunchedEffect(lastExtractCount) {
         if (lastExtractCount != null) {
             val count = lastExtractCount!!
-            snackbar.showSnackbar(if (count > 0) "Added $count new todos" else "No new todos found")
+            snackbar.showSnackbar(if (count > 0) "새 할 일 $count개를 추가했습니다" else "새로운 할 일이 없습니다")
             todoViewModel.clearLastExtractCount()
         }
     }
@@ -117,7 +117,7 @@ fun TodoScreen(
     if (showAddDialog) {
         AddTodoDialog(
             onDismiss = { showAddDialog = false },
-            onSave = { text ->
+            on저장 = { text ->
                 todoViewModel.addTodo(text)
                 showAddDialog = false
             }
@@ -129,10 +129,10 @@ fun TodoScreen(
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text("Todos") },
+                    title = { Text("할 일") },
                     navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        IconButton(onClick = on뒤로) {
+                            Icon(Icons.AutoMirrored.Filled.Arrow뒤로, contentDescription = "뒤로")
                         }
                     },
                     actions = {
@@ -140,7 +140,7 @@ fun TodoScreen(
                             onClick = { showLookbackDialog = true },
                             enabled = !isExtracting
                         ) {
-                            Icon(Icons.Default.AutoAwesome, contentDescription = "Update from recordings")
+                            Icon(Icons.Default.AutoAwesome, contentDescription = "녹음에서 업데이트")
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
@@ -157,7 +157,7 @@ fun TodoScreen(
         },
         floatingActionButton = {
             FloatingActionButton(onClick = { showAddDialog = true }) {
-                Icon(Icons.Default.Add, contentDescription = "Add todo")
+                Icon(Icons.Default.Add, contentDescription = "할 일 추가")
             }
         },
         snackbarHost = { SnackbarHost(snackbar) { Snackbar(it) } }
@@ -172,14 +172,14 @@ fun TodoScreen(
                     modifier = Modifier.padding(32.dp)
                 ) {
                     Text(
-                        text = "No todos yet.",
+                        text = "아직 할 일이 없습니다.",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         textAlign = TextAlign.Center
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Tap the sparkle icon above to extract action items from your recordings, or add one manually with the + button.",
+                        text = "위의 ✨ 버튼으로 녹음에서 할 일을 추출하거나 + 버튼으로 직접 추가할 수 있습니다.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -199,7 +199,7 @@ fun TodoScreen(
                         todo = todo,
                         onToggleDone = { todoViewModel.toggleDone(todo) },
                         onDelete = { todoViewModel.deleteTodo(todo) },
-                        onEditSave = { newText -> todoViewModel.editTodo(todo, newText) }
+                        onEdit저장 = { newText -> todoViewModel.editTodo(todo, newText) }
                     )
                 }
             }
@@ -213,7 +213,7 @@ private fun TodoSwipeToDeleteCard(
     todo: TodoItem,
     onToggleDone: () -> Unit,
     onDelete: () -> Unit,
-    onEditSave: (String) -> Unit
+    onEdit저장: (String) -> Unit
 ) {
     var showEditDialog by remember { mutableStateOf(false) }
     var editText by remember(todo.id, showEditDialog) { mutableStateOf(todo.text) }
@@ -221,7 +221,7 @@ private fun TodoSwipeToDeleteCard(
     if (showEditDialog) {
         AlertDialog(
             onDismissRequest = { showEditDialog = false },
-            title = { Text("Edit todo") },
+            title = { Text("할 일 편집") },
             text = {
                 OutlinedTextField(
                     value = editText,
@@ -232,20 +232,20 @@ private fun TodoSwipeToDeleteCard(
             confirmButton = {
                 Button(
                     onClick = {
-                        onEditSave(editText)
+                        onEdit저장(editText)
                         showEditDialog = false
                     },
                     enabled = editText.isNotBlank()
-                ) { Text("Save") }
+                ) { Text("저장") }
             },
             dismissButton = {
-                TextButton(onClick = { showEditDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showEditDialog = false }) { Text("취소") }
             }
         )
     }
 
     SwipeToDeleteCard(
-        confirmTitle = "Delete todo?",
+        confirmTitle = "할 일을 삭제할까요?",
         confirmText = "This will permanently remove this todo.",
         onDelete = onDelete
     ) {
@@ -277,7 +277,7 @@ private fun TodoSwipeToDeleteCard(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Add,
-                        contentDescription = "Add to Calendar",
+                        contentDescription = "캘린더에 추가",
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }
@@ -290,28 +290,28 @@ private fun TodoSwipeToDeleteCard(
 @Composable
 private fun AddTodoDialog(
     onDismiss: () -> Unit,
-    onSave: (String) -> Unit
+    on저장: (String) -> Unit
 ) {
     var text by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add todo") },
+        title = { Text("할 일 추가") },
         text = {
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
-                placeholder = { Text("What needs to be done?") },
+                placeholder = { Text("무엇을 해야 하나요?") },
                 modifier = Modifier.fillMaxWidth()
             )
         },
         confirmButton = {
             Button(
-                onClick = { onSave(text) },
+                onClick = { on저장(text) },
                 enabled = text.isNotBlank()
-            ) { Text("Save") }
+            ) { Text("저장") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text("취소") }
         }
     )
 }
@@ -324,20 +324,20 @@ private fun LookbackDialog(
     onConfirm: (Long) -> Unit
 ) {
     val prefs = remember { context.getSharedPreferences("daedalus_prefs", Context.MODE_PRIVATE) }
-    val storedHours = remember { prefs.getLong(TODO_LOOKBACK_HOURS_KEY, TODO_LOOKBACK_HOURS_DEFAULT) }
-    val initialSelection = remember { lookbackOptionFor(storedHours) }
+    val stored시간 = remember { prefs.getLong(TODO_LOOKBACK_HOURS_KEY, TODO_LOOKBACK_HOURS_DEFAULT) }
+    val initialSelection = remember { lookbackOptionFor(stored시간) }
 
-    var selectedHours by remember {
+    var selected시간 by remember {
         mutableStateOf(if (initialSelection is LookbackSelection.Standard) initialSelection.hours else null)
     }
     var customText by remember {
-        mutableStateOf(if (initialSelection is LookbackSelection.Custom) initialSelection.hours.toString() else "")
+        mutableStateOf(if (initialSelection is LookbackSelection.직접 설정) initialSelection.hours.toString() else "")
     }
-    val isCustomSelected = selectedHours == null
+    val is직접 설정Selected = selected시간 == null
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Update from recordings") },
+        title = { Text("녹음에서 업데이트") },
         text = {
             Column(Modifier.selectableGroup()) {
                 LOOKBACK_OPTIONS.forEach { option ->
@@ -345,13 +345,13 @@ private fun LookbackDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .selectable(
-                                selected = selectedHours == option.hours,
-                                onClick = { selectedHours = option.hours }
+                                selected = selected시간 == option.hours,
+                                onClick = { selected시간 = option.hours }
                             )
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        RadioButton(selected = selectedHours == option.hours, onClick = { selectedHours = option.hours })
+                        RadioButton(selected = selected시간 == option.hours, onClick = { selected시간 = option.hours })
                         Spacer(Modifier.width(8.dp))
                         Text(option.label)
                     }
@@ -360,21 +360,21 @@ private fun LookbackDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .selectable(
-                            selected = isCustomSelected,
-                            onClick = { selectedHours = null }
+                            selected = is직접 설정Selected,
+                            onClick = { selected시간 = null }
                         )
                         .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    RadioButton(selected = isCustomSelected, onClick = { selectedHours = null })
+                    RadioButton(selected = is직접 설정Selected, onClick = { selected시간 = null })
                     Spacer(Modifier.width(8.dp))
-                    Text("Custom")
+                    Text("직접 설정")
                 }
-                if (isCustomSelected) {
+                if (is직접 설정Selected) {
                     OutlinedTextField(
                         value = customText,
                         onValueChange = { customText = it },
-                        label = { Text("Hours") },
+                        label = { Text("시간") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().padding(start = 40.dp)
@@ -383,15 +383,15 @@ private fun LookbackDialog(
             }
         },
         confirmButton = {
-            val customHours = customText.toLongOrNull()
-            val confirmHours = if (isCustomSelected) customHours else selectedHours
+            val custom시간 = customText.toLongOrNull()
+            val confirm시간 = if (is직접 설정Selected) custom시간 else selected시간
             Button(
-                onClick = { if (confirmHours != null) onConfirm(confirmHours) },
-                enabled = confirmHours != null && (!isCustomSelected || confirmHours > 0)
-            ) { Text("Update") }
+                onClick = { if (confirm시간 != null) onConfirm(confirm시간) },
+                enabled = confirm시간 != null && (!is직접 설정Selected || confirm시간 > 0)
+            ) { Text("업데이트") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text("취소") }
         }
     )
 }

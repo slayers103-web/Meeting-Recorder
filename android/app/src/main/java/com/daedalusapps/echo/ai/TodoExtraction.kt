@@ -1,8 +1,8 @@
 package com.daedalusapps.echo.ai
 
-const val TODO_EXTRACTION_PROMPT = OFFLINE_GUARDRAIL + "\n\n" + """From the notes below, extract action items: things the SPEAKER commits to do or says they must do in the future.
+const val TODO_EXTRACTION_PROMPT = OFFLINE_GUARDRAIL + "\n\n" + """아래 노트에서 실행 항목을 추출하세요. 화자가 앞으로 직접 하겠다고 약속했거나 반드시 해야 한다고 말한 일만 추출하세요. 결과는 반드시 한국어로 작성하세요.
 
-NOT action items: narration of what the speaker is currently doing, comments about the recording or app itself, past events, opinions.
+실행 항목이 아닌 것: 현재 하고 있는 행동에 대한 단순 설명, 녹음이나 앱 자체에 대한 말, 과거에 끝난 일, 단순한 의견.
 
 Examples:
 Notes: "I need to pick up dry cleaning and call the dentist to reschedule."
@@ -15,7 +15,7 @@ Notes: "This is me testing the app, reading output from the agent to check trans
 Notes: "Just narrating my day here. Also remember to pay the electric bill before Friday."
 - Pay electric bill before Friday
 
-Return ONLY a bullet list, one task per line starting with "- ". Each task must be short (under 15 words), specific, and actionable. Do not repeat tasks from the "Already tracked" list. If there are no new tasks, return exactly "- none".
+한국어 글머리표만 반환하세요. 한 줄에 한 가지 실행 항목을 "- "로 시작하세요. 각 항목은 짧고 구체적이며 실제로 실행할 수 있어야 합니다. "Already tracked" 목록의 항목은 반복하지 마세요. 새로운 항목이 없으면 정확히 "- 없음"만 반환하세요.
 
 Notes:"""
 
@@ -25,7 +25,7 @@ private const val MAX_TODO_COUNT = 10
 
 private val BULLET_LINE_REGEX = Regex("""^\s*(?:[-*•]|\d+[.)])\s*(?:\[[ xX]?\]\s*)?(.+)""")
 
-private val NONE_SENTINELS = setOf("none", "no new tasks")
+private val NONE_SENTINELS = setOf("none", "no new tasks", "없음", "새로운 할 일이 없음")
 
 fun stripCodeFences(text: String): String {
     // Gemma sometimes wraps output in ```json ... ``` fences — strip them
@@ -49,7 +49,7 @@ fun parseTodoLines(raw: String): List<String> {
 
 fun normalizeTodoText(s: String): String =
     s.lowercase()
-        .replace(Regex("[^a-z0-9\\s]"), "")
+        .replace(Regex("[^\\p{L}\\p{N}\\s]"), "")
         .replace(Regex("\\s+"), " ")
         .trim()
 
@@ -57,7 +57,7 @@ private const val MIN_CONTAINMENT_LENGTH = 8
 
 private val DEDUP_STOPWORDS = setOf(
     "the", "a", "an", "to", "for", "of", "about", "regarding", "re", "your", "my", "our",
-    "his", "her", "their", "on", "in", "at", "with", "and"
+    "his", "her", "their", "on", "in", "at", "with", "and", "을", "를", "이", "가", "은", "는", "에", "의", "로", "와", "과", "및", "그리고"
 )
 
 fun isDuplicateTodo(candidate: String, existing: Collection<String>): Boolean {
